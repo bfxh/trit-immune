@@ -501,6 +501,47 @@ fn route_fleet(
         ("GET", "/v1/fleet/render") => {
             (200, fleet.read().expect("锁中毒").render_with_edges())
         }
+        ("GET", "/v1/fleet/attacks") => {
+            // 多跳攻击链：?repo=X&node=N[&max_chains=&max_depth=]
+            let Some((_, repo)) = query.iter().find(|(k, _)| k == "repo") else {
+                return (400, "缺 repo 参数\n".into());
+            };
+            let Some((_, node)) = query.iter().find(|(k, _)| k == "node") else {
+                return (400, "缺 node 参数\n".into());
+            };
+            let Ok(id) = node.parse::<u32>() else {
+                return (400, format!("node 非数字：{node}\n"));
+            };
+            let max_chains = query
+                .iter()
+                .find(|(k, _)| k == "max_chains")
+                .and_then(|(_, v)| v.parse::<usize>().ok())
+                .unwrap_or(64);
+            let max_depth = query
+                .iter()
+                .find(|(k, _)| k == "max_depth")
+                .and_then(|(_, v)| v.parse::<usize>().ok())
+                .unwrap_or(8);
+            let f = fleet.read().expect("锁中毒");
+            let res = f.attack_chains(repo, crate::NodeId(id), max_chains, max_depth);
+            let mut out = format!("chains={} truncated={}\n", res.chains.len(), res.truncated);
+            out.push_str("step\trepo\tnode\tvia\n");
+            for (ci, chain) in res.chains.iter().enumerate() {
+                for (si, step) in chain.steps.iter().enumerate() {
+                    let via = match step.via {
+                        crate::fleet::ChainVia::Source => "source",
+                        crate::fleet::ChainVia::Causal => "causal",
+                        crate::fleet::ChainVia::AnchoredAttack => "attack",
+                        crate::fleet::ChainVia::CrossLink => "crosslink",
+                    };
+                    out.push_str(&format!(
+                        "{}:{}\t{}\t{}\t{}\n",
+                        ci, si, step.node.0, step.node.1 .0, via
+                    ));
+                }
+            }
+            (200, out)
+        }
         ("GET", "/v1/fleet/links") => {
             let f = fleet.read().expect("锁中毒");
             let mut out = String::from("from_repo\tfrom_node\tto_repo\tto_node\tpass\tnote\n");
@@ -620,11 +661,12 @@ fn route_fleet(
         }
         (m, p) if p.starts_with("/v1/fleet/") => {
             // 已知端点但方法不对 → 405；未知路径 → 404
-            const KNOWN: [&str; 9] = [
+            const KNOWN: [&str; 10] = [
                 "/v1/fleet/health",
                 "/v1/fleet/repos",
                 "/v1/fleet/board",
                 "/v1/fleet/render",
+                "/v1/fleet/attacks",
                 "/v1/fleet/links",
                 "/v1/fleet/verdicts",
                 "/v1/fleet/verdict",
@@ -753,6 +795,35 @@ mod tests {
         assert_eq!(s, 405);
         let (s, _) = route_fleet(&shared, "GET", "/v1/fleet/nope", &[], "");
         assert_eq!(s, 404);
+    }
+
+    #[test]
+    fn fleet_route_attacks_endpoint() {
+        let f = temp_fleet();
+        let shared = std::sync::RwLock::new(f);
+        // 声明确认穿透边：up#1(-1) → down#1(+1)
+        let (s, _) = route_fleet(&shared, "POST", "/v1/fleet/links", &[], "up\t1\tdown\t1\t-1\t穿透\n");
+        assert_eq!(s, 200);
+        let q = vec![
+            ("repo".to_string(), "down".to_string()),
+            ("node".to_string(), "1".to_string()),
+        ];
+        let (s, body) = route_fleet(&shared, "GET", "/v1/fleet/attacks", &q, "");
+        assert_eq!(s, 200, "{body}");
+        assert!(body.starts_with("chains=1 truncated=false"), "{body}");
+        assert!(body.contains("\tsource\n") && body.contains("\tcrosslink\n"), "{body}");
+        // 缺参 400
+        let (s, _) = route_fleet(&shared, "GET", "/v1/fleet/attacks", &[], "");
+        assert_eq!(s, 400);
+        // 自定义上限
+        let q2 = vec![
+            ("repo".to_string(), "down".to_string()),
+            ("node".to_string(), "1".to_string()),
+            ("max_chains".to_string(), "1".to_string()),
+        ];
+        let (s, body) = route_fleet(&shared, "GET", "/v1/fleet/attacks", &q2, "");
+        assert_eq!(s, 200);
+        assert!(body.starts_with("chains=1"), "{body}");
     }
 
     #[test]

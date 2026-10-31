@@ -11,6 +11,10 @@ publish = false
 default = []
 tls = ["dep:rustls", "dep:rustls-pemfile", "dep:rcgen"]
 
+[lints.rust]
+# Kani 模型检查的 cfg 门（src/kani_proofs.rs，cargo kani 才编译）
+unexpected_cfgs = { level = "allow", check-cfg = ['cfg(kani)'] }
+
 [dependencies]
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"], optional = true }
 rustls-pemfile = { version = "2", optional = true }

@@ -38,6 +38,7 @@
 //! （`trit-core` 的 `Ternary`），聚焦安全裁决域；可作为该工作区的新成员接入。
 
 pub mod adoption;
+pub mod attest;
 pub mod auth;
 pub mod bitparallel;
 pub mod cull;
@@ -52,6 +53,8 @@ pub mod hlc;
 pub mod import;
 pub mod intake;
 pub mod json;
+#[cfg(kani)]
+pub mod kani_proofs;
 pub mod journal;
 pub mod lifecycle;
 pub mod lsp;
@@ -79,6 +82,7 @@ pub mod vocab;
 
 pub use adoption::{Adoption, AdoptionState, Blast, ChangePackage, Impact, Receiver};
 pub use auth::{ct_eq, hmac_sha256, sha256};
+pub use attest::{attest, verify, PREDICATE_TYPE, STATEMENT_TYPE};
 pub use bitparallel::TriWord;
 pub use cull::{cull, CullAction, CullRules};
 pub use daemon::{encode_frame, json_escape, read_frame, LspSession};
