@@ -43,6 +43,7 @@
 | 34 | **FleetServer**（fleet 层的 HTTP 面，与单仓 `Server` 平行：聚合视图读端点 + 跨仓协议写端点，全部 TSV 文本与单仓同风格） | ✅ | `server.rs`：`FleetServer` + `route_fleet` 纯函数路由（不绑 TCP 直接测）——`GET health/repos/board/render/links/verdicts?repo=/verdict?repo=&node=`、`POST links`（声明边，逐行校验拒绝）/`record`（仓内写原语）/`sync`（触发反熵返回落账清单）；405/404 区分（已知端点方法错 vs 未知路径）；TCP 冒烟测试钉死 |
 | 35 | **研究轮落地①：矛盾检测器 + 打穿来源回溯**（Belnap FOUR 的 ⊥ 态视图 + Sheyner 攻击图极简形态；六方向研究纪要见 `docs/RESEARCH.md`） | ✅ | `dag::contradictions()`（历史既有 `-1` 又有 `+1` 且未隔离 → 0 态候选；K3 折叠把矛盾压成坏消息支配，但矛盾本身是信息；⊥ 不进存储、查询时从账本派生）+ `dag::breach_sources(target)` + `BreachKind`（Ancestor/AnchoredAttack/CrossLink 三种打穿路径，与 merge_gate 折叠来源严格对齐——"门禁为什么坏"与"红队渗透路径"是同一份账的两种读法） |
 | 36 | **研究轮落地②：OpenVEX 导出**（三值裁决 → CISA 四状态互操作标准，系统成为 SBOM 生态的 VEX 提供方） | ✅ | `vex.rs`：`export_vex(dag, author, product)` 输出 OpenVEX v0.2.0 JSON（`-1→affected`、`0→under_investigation`、`+1→not_affected`、`+1 且历史有 -1→fixed`——**fixed 账本派生**：无 `曾 -1` 证据不得声明，与"作者打勾≠+1"同一条纪律）；手写序列化零依赖，转义复用 `daemon::json_escape`，导出经 `json::parse` 往回验证合法 |
+| 37 | **多跳攻击链枚举**（`dag::breach_sources` 的跨仓完全体：fleet 级渗透路径报告——从任一确认 `-1` 源到 target 的完整污染路径，跨仓边 + 仓内因果链 + 锚定攻击分支三形态） | ✅ | `fleet::attack_chains(target_repo, target, max_chains, max_depth)` + `AttackChain/ChainStep/ChainVia`：**源判定 = 节点自身 `-1`**（#33 入账事实的价值：跨仓污染已落账进节点自身）；**只有确认穿透边传打穿**（(min,max) 语义：可疑边把 -1 拉成 0）；可疑 0 继续追根不 emit；自身 +1 挡路即停；深度/条数/环三重截断如实报告；`steps[i].via` = 攻击方向进入该节点的边（对位：edges[j] 连接 n_{j-1} 与 n_j） |
 
 ### 标签语义澄清（2026-10-31）
 

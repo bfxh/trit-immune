@@ -82,14 +82,14 @@ pub use auth::{ct_eq, hmac_sha256, sha256};
 pub use bitparallel::TriWord;
 pub use cull::{cull, CullAction, CullRules};
 pub use daemon::{encode_frame, json_escape, read_frame, LspSession};
-pub use dag::{Convergence, Coupling, CrossLink, ImmuneDag, Node, NodeId, NodeKind, VerdictEvent};
+pub use dag::{BreachKind, Convergence, Coupling, CrossLink, ImmuneDag, Node, NodeId, NodeKind, VerdictEvent};
 pub use delta::{merge_order, ApplyError, Delta, Stamped};
 pub use design::{
     classify, grade, ArchTest, DesignArea, DesignQueue, PrIntake, QueueEntry, QueueStatus,
     Routing, Statute, Statutes, Tier, TierPolicy, Violation,
 };
 pub use diag::{layer_verdict, parse_rustc_stream, Diagnostic, Severity};
-pub use fleet::{CrossRepoDelta, Fleet, FleetRow};
+pub use fleet::{AttackChain, AttackChains, ChainStep, ChainVia, CrossRepoDelta, Fleet, FleetRow};
 pub use harvest::{harvest, HarvestReport, Registry};
 pub use hlc::{Clock, Hlc};
 pub use import::{collect_git_log, export_dag_tsv, import_commits, parse_git_log, CommitRecord};

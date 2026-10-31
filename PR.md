@@ -53,6 +53,7 @@ DAG 上传播。trit-immune 就是那个域层。它是 trit-core `Ternary` 的�
 | `FleetServer` | fleet 层 HTTP 面：聚合看板/流程图/跨仓边声明/反熵触发（TSV 同风格） | route 纯函数测试 + TCP 冒烟 |
 | `dag::contradictions` + `breach_sources` | 研究落地：Belnap ⊥ 矛盾视图 + 攻击图打穿来源回溯（三路径标注） | 矛盾上报/隔离不重复/三路径对齐 merge_gate |
 | `vex.rs` | OpenVEX v0.2.0 导出：三值 → CISA 四状态（fixed 账本派生） | 四状态映射/JSON 往回验证/恶意标题转义 |
+| `fleet::attack_chains` | 多跳攻击链枚举：源→target 完整污染路径（仓内链+跨仓边+锚定攻击，三重截断） | 单仓/跨仓/拦截边/可疑不 emit/环/截断如实 |
 | `transport` | 传输抽象（TCP/Memory/可插拔 TLS） | 确定性收敛 |
 
 ## 压力测试
