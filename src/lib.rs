@@ -88,7 +88,7 @@ pub use design::{
     Routing, Statute, Statutes, Tier, TierPolicy, Violation,
 };
 pub use diag::{layer_verdict, parse_rustc_stream, Diagnostic, Severity};
-pub use fleet::{Fleet, FleetRow};
+pub use fleet::{CrossRepoDelta, Fleet, FleetRow};
 pub use harvest::{harvest, HarvestReport, Registry};
 pub use hlc::{Clock, Hlc};
 pub use import::{collect_git_log, export_dag_tsv, import_commits, parse_git_log, CommitRecord};

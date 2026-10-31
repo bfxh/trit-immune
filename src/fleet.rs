@@ -70,6 +70,30 @@ impl Fleet {
             .map(|(_, j)| j)
     }
 
+    /// 读某仓某节点当前裁决（跨仓协议的只读原语）。
+    pub fn repo_verdict(&self, repo: &str, id: NodeId) -> io::Result<Trit> {
+        let j = self
+            .get(repo)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("无仓 {repo}")))?;
+        let dag = j.dag();
+        if id.0 as usize >= dag.nodes().len() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("节点 #{:02} 不存在于 {repo}", id.0),
+            ));
+        }
+        Ok(dag.node(id).verdict)
+    }
+
+    /// 记录某仓某节点的裁决（跨仓协议的仓内写原语，走该仓自己的 journal）。
+    pub fn record_repo(&mut self, repo: &str, id: NodeId, verdict: Trit, note: &str) -> io::Result<()> {
+        let j = self
+            .get_mut(repo)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("无仓 {repo}")))?;
+        j.record(id, verdict, None, note)
+            .map_err(io::Error::other)
+    }
+
     pub fn names(&self) -> Vec<&str> {
         self.repos.iter().map(|(n, _)| n.as_str()).collect()
     }
@@ -362,6 +386,75 @@ impl Fleet {
             .map(|n| n.verdict.and(cont[n.id.0 as usize]))
             .collect())
     }
+
+    /// **跨仓 Delta 反熵**（完整协议）：扫描全部跨仓边，把源端当前裁决经边强度
+    /// **落账**到目标端节点——目标仓自己的 journal 里出现 `Delta::Record`，
+    /// 独立打开也能看到影响历史，门禁可折叠，重放一致（与"查询时传播"
+    /// `effective_verdicts` 互补：查询是现算视图，落账是入账事实）。
+    ///
+    /// 语义纪律（与全系统同构）：
+    /// - 落账值 = `max(源 verdict, 边 pass)`——与 (min,max) 查询语义严格一致，
+    ///   落账后查询结果不会与账目矛盾；
+    /// - **变坏才落账**（落账值 < 目标自身 verdict 才写）——天然幂等，可反复跑；
+    /// - **`+1` 永不跨仓落账**——下游的 +1 必须自己验证挣得，与"扫描器永不 +1"
+    ///   同一条纪律；已证拦截边（pass=+1）同样不落坏消息；
+    /// - 未知仓/越界节点跳过（与 `load_links` 的加载期解耦语义一致）。
+    ///
+    /// 两阶段：先全量收集计划（不可变借用），再逐条落账（可变借用）。
+    /// note 自动附加溯源（`← 仓:节点`），账目可追溯。
+    pub fn sync_cross_repo(&mut self, note: &str) -> io::Result<Vec<CrossRepoDelta>> {
+        // 阶段 1：收集计划
+        let mut plan: Vec<((String, NodeId), (String, NodeId), Trit)> = Vec::new();
+        for link in &self.cross_links {
+            let Some(src) = self.get(&link.from.0) else {
+                continue;
+            };
+            let src_dag = src.dag();
+            if link.from.1 .0 as usize >= src_dag.nodes().len() {
+                continue;
+            }
+            let sv = src_dag.node(link.from.1).verdict;
+            let out = sv.max(link.pass);
+            if out == Trit::Hardened {
+                continue; // +1 永不跨仓
+            }
+            let Some(dst) = self.get(&link.to.0) else {
+                continue;
+            };
+            let dst_dag = dst.dag();
+            if link.to.1 .0 as usize >= dst_dag.nodes().len() {
+                continue;
+            }
+            let dv = dst_dag.node(link.to.1).verdict;
+            if out >= dv {
+                continue; // 变坏才落账
+            }
+            plan.push((link.from.clone(), link.to.clone(), out));
+        }
+        // 阶段 2：落账
+        let mut results = Vec::with_capacity(plan.len());
+        for (from, to, v) in plan {
+            let full_note = format!("{note} ← {}:{}", from.0, from.1 .0);
+            if let Some(j) = self.get_mut(&to.0) {
+                j.record(to.1, v, None, &full_note)
+                    .map_err(io::Error::other)?;
+            }
+            results.push(CrossRepoDelta {
+                from,
+                to,
+                verdict: v,
+            });
+        }
+        Ok(results)
+    }
+}
+
+/// 一条跨仓落账：源端 (仓, 节点) → 目标端 (仓, 节点)，落账裁决。
+#[derive(Debug, Clone, PartialEq)]
+pub struct CrossRepoDelta {
+    pub from: (String, NodeId),
+    pub to: (String, NodeId),
+    pub verdict: Trit,
 }
 
 #[cfg(test)]

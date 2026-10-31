@@ -17,7 +17,9 @@ use std::ops::{BitAnd, BitOr, BitXor, Not};
 use std::str::FromStr;
 
 /// 单个三进制位（trit）：漏洞确认 / 未知 / 防御成功。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// 派生序 = 声明序：`Vulnerable < Unknown < Hardened`（坏→好），
+/// 供"变坏才落账"等单调性判断使用。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(i8)]
 pub enum Trit {
     /// `-1`：攻击成功，漏洞确证（K3 的 False）。
