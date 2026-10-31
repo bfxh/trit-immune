@@ -48,6 +48,7 @@
 | 39 | **HMAC 签名 attestation**（in-toto Statement v1 形态：subject digest 绑定账本内容 + predicate 照实转写裁决集） | ✅ | `attest.rs`：`attest(dag, author, product, key, key_id)` + `verify`（HMAC-SHA256 + 常量时间比较，复用 `auth.rs`）；digest = `export_dag_tsv` 的 SHA-256——声明与账本强绑定；篡改 payload/错钥/账本变更 → 拒绝，测试钉死 |
 | 40 | **Kani 模型检查 harness**（GOAL.md 升级①完全体：符号执行穷举输入空间，超越随机采样） | ✅（待触发） | `kani_proofs.rs`（`#[cfg(kani)]` 门控，常规编译零影响 + Cargo.toml check-cfg 登记）：K3 AND 交换/结合/单调/幂等（3×3、3³ 全空间）+ 门禁单调（任意三裁决列表追加 -1 不升级）；`cargo install kani-verifier && cargo kani` 即跑（本机未装，触发条件就绪） |
 | 41 | **上游 PR 正式化**（并入 bfxh/trit workspace：crates/trit-immune + compat 对接） | ✅ | **PR #197**（bfxh/trit）：`crates/trit-immune` 加入 workspace members + `compat.rs`（Trit ↔ Ternary 双向 From + **3×3 同构穷举**：K3 AND ≡ Kleene BitAnd，False/Vulnerable 同为支配元）；上游 workspace 内 `cargo test -p trit-immune` 217 全绿 |
+| 42 | **`trit` CLI：journal 代替 git 的命令行**（git 的每个核心操作在账本上都有对应物，大多更强） | ✅ | `src/bin/trit.rs`：`init`（建账本）/`log`（HLC 全序历史）/`status`（收敛+门禁）/`branch`（spawn 分叉——DAG 天生多分支）/`commit -m -v -n`（记录裁决，默认 0 未测不可信）/`merge`（**δ-CRDT 无冲突合并**，与顺序无关——比 git merge 强的地方：没有冲突标记，只有收敛）/`checkout`（**时间旅行**：重放到任意节点，日志不可变历史永不丢）/`clone`（账本即工件）/`gate`（三值门禁+打穿来源——git 只知道冲突不知道风险）/`suspects`（0 态待办）；全工作流端到端测试（含克隆侧增量经 δ-CRDT 合并回主账本） |
 
 ### 标签语义澄清（2026-10-31）
 
