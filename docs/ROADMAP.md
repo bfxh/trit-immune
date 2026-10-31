@@ -35,6 +35,9 @@
 | 26 | **自动化 intake 管线**（外部代码 → 自动扫安全 + 死依赖检测 → 自动隔离入账 → 调度器 drain → 智能体处理） | ✅ | `intake.rs`：`find_dead_deps`（Cargo.toml vs use/:: 交叉比对）+ `intake_pr`（全自动管线：扫→死依赖→隔离→等智能体，扫描器永不 +1） |
 | 27 | **性质测试**（例子测试说"这个输入对"，性质测试说"任何输入都对"：门禁单调 / 合并交换 / 传播单调 / 重放一致 / 收敛单调，五条不变量 × 确定性随机输入） | ✅ | `tests/properties.rs`（xorshift64 固定种子可复现；GOAL.md 升级①"形式化验证"的落地形态——K3 AND 单调性、HLC 全序归并、"日志即数据库"、(min,max) 半环的充分条件验证） |
 | 28 | **供应链完整性**（GOAL.md 升级②：依赖投毒 / dependency confusion / 锁文件篡改的确定性防线——Cargo.lock `[[package]]` 解析 + TSV 基线比对：新依赖→`-1`、checksum 变化→`-1`（Dispositive）、移除→`+1`；Cargo.toml SHA-256 清单指纹） | ✅ | `supply.rs`（`parse_lock/audit/encode_baseline/parse_baseline/fingerprint`，零网络零第三方）+ `intake::intake_supply`（finding 以**锚定攻击分支**挂 parent，`-1` 收紧 merge_gate；兄弟分支不殃及语义不变） |
+| 29 | **容错与恢复**（AI/人类误操作可返回：改动前快照 + 保留期周期清除 + 整树恢复——journal"追加式不可变"哲学落到文件系统层） | ✅ | `recovery.rs`：`BackupVault::capture`（先验后写 fail fast + 原子改名）/`restore`（恢复前自动 capture 现场，undo 链可续）/`gc`（份数+天数双上限，顺带清 `.tmp` 残留与损坏目录）/根围栏拒 `..` 逃逸/损坏快照如实上报（`Inventory::corrupt`）不静默 |
+| 30 | **数据转移桥**（从 Git/GitHub 等方便转移：转入走防污染协议，转出 git-friendly） | ✅ | `import.rs`：`parse_git_log`（`\x1e/\x1f` 分隔纯函数）+ `collect_git_log`（git CLI 便捷封装，固定参数无注入面）+ `import_commits`（每条 commit → Message **0 态**入账——历史是事实不是裁决，作者声称≠已验证；外部仓库整批自动隔离）+ `export_dag_tsv`（全量导出，恒 6 列可 diff） |
+| 31 | **默认项目模板**（高维护性脚手架：无上帝对象从第一天开始，且机器可查） | ✅ | `template.rs`：`scaffold`（模块化骨架：lib.rs 只装配、小模块单一职责、测试/文档齐备）+ `audit_discipline`（反上帝对象机械判据：单文件行数/公开项上限 → 0 态候选）；**模板生成物必须通过自身纪律检查**（测试钉死） |
 
 ### 标签语义澄清（2026-10-31）
 
