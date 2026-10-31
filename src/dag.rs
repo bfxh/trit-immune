@@ -108,6 +108,17 @@ pub struct Convergence {
     pub ratio: f64,
 }
 
+/// 打穿路径种类（[`ImmuneDag::breach_sources`] 的路径标注）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BreachKind {
+    /// 沿因果链的祖先节点 `-1`（代码依赖链上的洞）。
+    Ancestor,
+    /// 锚定攻击分支 `-1`（红队在此锚点打穿）。
+    AnchoredAttack,
+    /// 跨树污染边 `-1`（外部依赖/共享消息把洞带进来）。
+    CrossLink,
+}
+
 /// 免疫网络：节点数组 + 因果边（parent）+ 跨树污染边。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImmuneDag {
@@ -481,6 +492,60 @@ impl ImmuneDag {
             .filter(|n| n.verdict == Trit::Unknown)
             .map(|n| n.id)
             .collect()
+    }
+
+    /// **矛盾节点**（Belnap FOUR 的 ⊥"both" 态视图）：历史里既有 `-1` 又有
+    /// `+1`、且未被隔离。K3 AND 折叠把矛盾压成坏消息支配，但**矛盾本身是
+    /// 信息**——同一节点被某来源判坏、又被另一来源判好，值得人看一眼
+    /// （0 态候选，与 `design_smells` 同一消费姿势：机械判据替人眼挡噪音）。
+    /// 隔离节点不重复上报（已有人看）。
+    pub fn contradictions(&self) -> Vec<NodeId> {
+        self.nodes
+            .iter()
+            .filter(|n| {
+                !n.quarantined
+                    && n.history.iter().any(|e| e.verdict == Trit::Vulnerable)
+                    && n.history.iter().any(|e| e.verdict == Trit::Hardened)
+            })
+            .map(|n| n.id)
+            .collect()
+    }
+
+    /// **打穿来源回溯**（Sheyner 攻击图的极简形态）：列出全部把 `target`
+    /// 拉向 `-1` 的来源与路径种类——与 [`Self::merge_gate`] 折叠的同一批
+    /// 来源严格对齐（因果链祖先的 `-1` / 锚定攻击分支的 `-1` / 指向 target
+    /// 的 `-1` 跨树边），因此"门禁为什么坏"与"红队渗透路径"是同一份账的
+    /// 两种读法。返回顺序：因果链序在前、跨树边在后。
+    pub fn breach_sources(&self, target: NodeId) -> Vec<(NodeId, BreachKind)> {
+        let cont = self.contamination();
+        let mut out: Vec<(NodeId, BreachKind)> = Vec::new();
+        let push = |id: NodeId, kind: BreachKind, out: &mut Vec<(NodeId, BreachKind)>| {
+            if !out.iter().any(|(x, k)| *x == id && *k == kind) {
+                out.push((id, kind));
+            }
+        };
+        for n in self.chain(target) {
+            let node = &self.nodes[n.0 as usize];
+            if node.verdict.and(cont[n.0 as usize]) == Trit::Vulnerable {
+                push(n, BreachKind::Ancestor, &mut out);
+            }
+            for a in self.anchored_attacks(n) {
+                let atk = &self.nodes[a.0 as usize];
+                if atk.verdict.and(cont[a.0 as usize]) == Trit::Vulnerable {
+                    push(a, BreachKind::AnchoredAttack, &mut out);
+                }
+            }
+        }
+        for l in &self.links {
+            if l.to == target {
+                let src = &self.nodes[l.from.0 as usize];
+                let inflow = src.verdict.and(cont[l.from.0 as usize]).max(l.pass);
+                if inflow == Trit::Vulnerable {
+                    push(l.from, BreachKind::CrossLink, &mut out);
+                }
+            }
+        }
+        out
     }
 
     /// 结构耦合视图：某节点的跨树边扇入/扇出与最坏边强度（三值）。

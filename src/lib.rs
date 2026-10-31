@@ -74,6 +74,7 @@ pub mod tls;
 pub mod transport;
 pub mod trit;
 pub mod verdict;
+pub mod vex;
 pub mod vocab;
 
 pub use adoption::{Adoption, AdoptionState, Blast, ChangePackage, Impact, Receiver};
@@ -114,4 +115,5 @@ pub use template::{audit_discipline, scaffold, Discipline, DisciplineViolation, 
 pub use transport::{pull_merge_via, MemoryTransport, TcpTransport, Transport};
 pub use trit::Trit;
 pub use verdict::{merge_gate, AttackVector, ExploitEvidence, GateDecision};
+pub use vex::{export_vex, OPENVEX_CONTEXT, VexStatus};
 pub use vocab::{Absorption, Concept, Registration, Vocabulary};

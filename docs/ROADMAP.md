@@ -41,6 +41,8 @@
 | 32 | **LSP 实时流守护进程**（rust-analyzer 实时桥的协议+会话层：内核零进程创建，spawn 留给部署层） | ✅ | `daemon.rs`：`encode_frame/read_frame`（LSP over stdio 帧协议，纯函数）+ `LspSession`（**泛型 IO**——子进程 stdio/TCP/测试内存流同一代码路径；initialize 握手 + didOpen/didSave + `pump` 泵读 + 请求应答途中通知缓存不丢消息）+ 全链路测试：握手→didOpen→pump→`LspBridge`→journal 落账（E→-1）；部署层集成方式（`Command::new` + stdio）在模块文档给出参考实现 |
 | 33 | **跨仓 Delta 完整协议**（跨仓影响从"查询时视图"升级为"入账事实"：目标仓自己的 journal 里出现 `Delta::Record`，独立打开可见影响历史、门禁可折叠、重放一致） | ✅ | `fleet::sync_cross_repo`（跨仓 Delta 反熵：扫描全部边，落账值 = `max(源 verdict, 边 pass)` 与 (min,max) 查询语义严格一致；**变坏才落账**天然幂等；**`+1` 永不跨仓落账**——下游的 +1 必须自己挣，与"扫描器永不 +1"同一条纪律；未知仓/越界节点如实跳过）+ `repo_verdict`/`record_repo`（仓内读写原语）+ `Trit` 派生 `Ord`（坏→好单调序） |
 | 34 | **FleetServer**（fleet 层的 HTTP 面，与单仓 `Server` 平行：聚合视图读端点 + 跨仓协议写端点，全部 TSV 文本与单仓同风格） | ✅ | `server.rs`：`FleetServer` + `route_fleet` 纯函数路由（不绑 TCP 直接测）——`GET health/repos/board/render/links/verdicts?repo=/verdict?repo=&node=`、`POST links`（声明边，逐行校验拒绝）/`record`（仓内写原语）/`sync`（触发反熵返回落账清单）；405/404 区分（已知端点方法错 vs 未知路径）；TCP 冒烟测试钉死 |
+| 35 | **研究轮落地①：矛盾检测器 + 打穿来源回溯**（Belnap FOUR 的 ⊥ 态视图 + Sheyner 攻击图极简形态；六方向研究纪要见 `docs/RESEARCH.md`） | ✅ | `dag::contradictions()`（历史既有 `-1` 又有 `+1` 且未隔离 → 0 态候选；K3 折叠把矛盾压成坏消息支配，但矛盾本身是信息；⊥ 不进存储、查询时从账本派生）+ `dag::breach_sources(target)` + `BreachKind`（Ancestor/AnchoredAttack/CrossLink 三种打穿路径，与 merge_gate 折叠来源严格对齐——"门禁为什么坏"与"红队渗透路径"是同一份账的两种读法） |
+| 36 | **研究轮落地②：OpenVEX 导出**（三值裁决 → CISA 四状态互操作标准，系统成为 SBOM 生态的 VEX 提供方） | ✅ | `vex.rs`：`export_vex(dag, author, product)` 输出 OpenVEX v0.2.0 JSON（`-1→affected`、`0→under_investigation`、`+1→not_affected`、`+1 且历史有 -1→fixed`——**fixed 账本派生**：无 `曾 -1` 证据不得声明，与"作者打勾≠+1"同一条纪律）；手写序列化零依赖，转义复用 `daemon::json_escape`，导出经 `json::parse` 往回验证合法 |
 
 ### 标签语义澄清（2026-10-31）
 
