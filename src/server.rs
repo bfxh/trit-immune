@@ -10,6 +10,7 @@
 
 use crate::design::{self, DesignArea, PrIntake};
 use crate::diag::{self, Severity};
+use crate::fleet::Fleet;
 use crate::journal::Journal;
 use crate::lsp;
 use crate::scan;
@@ -418,6 +419,228 @@ fn format_response(status: u16, body: &str) -> String {
     )
 }
 
+/// 共享的多仓舰队服务（fleet 层的 HTTP 面，与单仓 [`Server`] 平行）。
+#[derive(Debug, Clone)]
+pub struct FleetServer {
+    pub fleet: Arc<RwLock<Fleet>>,
+}
+
+impl FleetServer {
+    pub fn new(fleet: Fleet) -> Self {
+        Self {
+            fleet: Arc::new(RwLock::new(fleet)),
+        }
+    }
+
+    pub fn from_shared(fleet: Arc<RwLock<Fleet>>) -> Self {
+        Self { fleet }
+    }
+
+    /// 阻塞服务循环（每连接一线程）。返回实际绑定地址。
+    pub fn serve(&self, addr: SocketAddr) -> io::Result<SocketAddr> {
+        let listener = TcpListener::bind(addr)?;
+        let bound = listener.local_addr()?;
+        let shared = Arc::clone(&self.fleet);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let shared = Arc::clone(&shared);
+                std::thread::spawn(move || {
+                    let _ = handle_fleet_conn(&mut stream, &shared);
+                });
+            }
+        });
+        Ok(bound)
+    }
+}
+
+fn handle_fleet_conn(stream: &mut TcpStream, fleet: &RwLock<Fleet>) -> io::Result<()> {
+    let (method, path, query, body) = read_request(stream)?;
+    let (status, text) = route_fleet(fleet, &method, &path, &query, &body);
+    let resp = format_response(status, &text);
+    stream.write_all(resp.as_bytes())
+}
+
+/// fleet 纯函数路由（不绑 TCP，可直接测）。
+///
+/// 端点（全部 TSV 文本，与单仓 [`route`] 同风格）：
+/// - `GET  /v1/fleet/health` — 存活
+/// - `GET  /v1/fleet/repos` — 仓名列表（每行一个）
+/// - `GET  /v1/fleet/board` — 聚合收敛表（name/total/hardened/ratio/suspects/quarantined）
+/// - `GET  /v1/fleet/render` — 聚合流程图（含跨仓边）
+/// - `GET  /v1/fleet/links` — 跨仓边列表
+/// - `GET  /v1/fleet/verdicts?repo=X` — X 仓有效裁决（自身 ∧ 舰队污染）
+/// - `GET  /v1/fleet/verdict?repo=X&node=N` — 单节点当前裁决
+/// - `POST /v1/fleet/links` — 声明跨仓边；body 每行 `from_repo\tfrom_node\tto_repo\tto_node\tpass\tnote`
+/// - `POST /v1/fleet/record` — 仓内写裁决；body `repo\tnode\tverdict\tnote`
+/// - `POST /v1/fleet/sync` — 跨仓 Delta 反熵；body = note（可空）
+fn route_fleet(
+    fleet: &RwLock<Fleet>,
+    method: &str,
+    path: &str,
+    query: &[(String, String)],
+    body: &str,
+) -> (u16, String) {
+    match (method, path) {
+        ("GET", "/v1/fleet/health") => (200, "ok\n".into()),
+        ("GET", "/v1/fleet/repos") => {
+            let f = fleet.read().expect("锁中毒");
+            (200, f.names().into_iter().collect::<Vec<_>>().join("\n") + "\n")
+        }
+        ("GET", "/v1/fleet/board") => {
+            let f = fleet.read().expect("锁中毒");
+            let mut out = String::from("name\ttotal\thardened\tratio\tsuspects\tquarantined\n");
+            for r in f.report() {
+                out.push_str(&format!(
+                    "{}\t{}\t{}\t{:.3}\t{}\t{}\n",
+                    r.name, r.total, r.hardened, r.ratio, r.suspects, r.quarantined
+                ));
+            }
+            (200, out)
+        }
+        ("GET", "/v1/fleet/render") => {
+            (200, fleet.read().expect("锁中毒").render_with_edges())
+        }
+        ("GET", "/v1/fleet/links") => {
+            let f = fleet.read().expect("锁中毒");
+            let mut out = String::from("from_repo\tfrom_node\tto_repo\tto_node\tpass\tnote\n");
+            for l in f.cross_links() {
+                out.push_str(&format!(
+                    "{}\t{}\t{}\t{}\t{}\t{}\n",
+                    l.from.0,
+                    l.from.1 .0,
+                    l.to.0,
+                    l.to.1 .0,
+                    l.pass.to_i8(),
+                    l.note
+                ));
+            }
+            (200, out)
+        }
+        ("GET", "/v1/fleet/verdicts") => {
+            let Some((_, repo)) = query.iter().find(|(k, _)| k == "repo") else {
+                return (400, "缺 repo 参数\n".into());
+            };
+            let f = fleet.read().expect("锁中毒");
+            match f.effective_verdicts(repo) {
+                Ok(vs) => {
+                    let mut out = String::from("node\tverdict\n");
+                    for (i, v) in vs.iter().enumerate() {
+                        out.push_str(&format!("{}\t{}\n", i, v.to_i8()));
+                    }
+                    (200, out)
+                }
+                Err(e) => (404, format!("{e}\n")),
+            }
+        }
+        ("GET", "/v1/fleet/verdict") => {
+            let Some((_, repo)) = query.iter().find(|(k, _)| k == "repo") else {
+                return (400, "缺 repo 参数\n".into());
+            };
+            let Some((_, node)) = query.iter().find(|(k, _)| k == "node") else {
+                return (400, "缺 node 参数\n".into());
+            };
+            let Ok(id) = node.parse::<u32>() else {
+                return (400, format!("node 非数字：{node}\n"));
+            };
+            let f = fleet.read().expect("锁中毒");
+            match f.repo_verdict(repo, crate::NodeId(id)) {
+                Ok(v) => (200, format!("{v}\n")),
+                Err(e) => (404, format!("{e}\n")),
+            }
+        }
+        ("POST", "/v1/fleet/links") => {
+            let mut f = fleet.write().expect("锁中毒");
+            let (mut ok, _bad) = (0usize, 0usize);
+            for (i, line) in body.lines().enumerate() {
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+                let parts: Vec<&str> = line.split('\t').collect();
+                let Some((fr, fid, tr, tid, pass)) = (|| {
+                    Some((
+                        parts.first()?.to_string(),
+                        parts.get(1)?.parse::<u32>().ok()?,
+                        parts.get(2)?.to_string(),
+                        parts.get(3)?.parse::<u32>().ok()?,
+                        parts.get(4)?.parse::<crate::Trit>().ok()?,
+                    ))
+                })() else {
+                    return (400, format!("第 {} 行不合法（应为 6 列 TSV）\n", i + 1));
+                };
+                let note = parts.get(5).copied().unwrap_or("");
+                match f.add_cross_link(
+                    (fr.as_str(), crate::NodeId(fid)),
+                    (tr.as_str(), crate::NodeId(tid)),
+                    pass,
+                    note,
+                ) {
+                    Ok(()) => ok += 1,
+                    Err(e) => return (400, format!("第 {} 行拒绝：{e}\n", i + 1)),
+                }
+            }
+            (200, format!("links={ok}\n"))
+        }
+        ("POST", "/v1/fleet/record") => {
+            let parts: Vec<&str> = body.trim().split('\t').collect();
+            let Some((repo, id, verdict)) = (|| {
+                Some((
+                    parts.first()?.to_string(),
+                    parts.get(1)?.parse::<u32>().ok()?,
+                    parts.get(2)?.parse::<crate::Trit>().ok()?,
+                ))
+            })() else {
+                return (400, "body 应为 repo\\tnode\\tverdict\\tnote\n".into());
+            };
+            let note = parts.get(3).copied().unwrap_or("");
+            let mut f = fleet.write().expect("锁中毒");
+            match f.record_repo(&repo, crate::NodeId(id), verdict, note) {
+                Ok(()) => (200, format!("recorded {repo}#{id}={verdict}\n")),
+                Err(e) => (400, format!("{e}\n")),
+            }
+        }
+        ("POST", "/v1/fleet/sync") => {
+            let note = if body.trim().is_empty() { "fleet sync" } else { body.trim() };
+            let mut f = fleet.write().expect("锁中毒");
+            match f.sync_cross_repo(note) {
+                Ok(landed) => {
+                    let mut out = format!("landed={}\n", landed.len());
+                    out.push_str("from_repo\tfrom_node\tto_repo\tto_node\tverdict\n");
+                    for d in &landed {
+                        out.push_str(&format!(
+                            "{}\t{}\t{}\t{}\t{}\n",
+                            d.from.0, d.from.1 .0, d.to.0, d.to.1 .0, d.verdict.to_i8()
+                        ));
+                    }
+                    (200, out)
+                }
+                Err(e) => (500, format!("同步失败：{e}\n")),
+            }
+        }
+        (m, p) if p.starts_with("/v1/fleet/") => {
+            // 已知端点但方法不对 → 405；未知路径 → 404
+            const KNOWN: [&str; 9] = [
+                "/v1/fleet/health",
+                "/v1/fleet/repos",
+                "/v1/fleet/board",
+                "/v1/fleet/render",
+                "/v1/fleet/links",
+                "/v1/fleet/verdicts",
+                "/v1/fleet/verdict",
+                "/v1/fleet/record",
+                "/v1/fleet/sync",
+            ];
+            if KNOWN.contains(&p) {
+                (405, format!("方法 {m} 不适用于 {p}\n"))
+            } else {
+                (404, "未知端点（fleet 端点在 /v1/fleet/ 下）\n".into())
+            }
+        }
+        _ => (404, "未知端点（fleet 端点在 /v1/fleet/ 下）\n".into()),
+    }
+}
+
 /// 极简 HTTP 客户端（测试与脚本用；返回 (状态码, 响应体)）。
 pub mod client {
     use super::*;
@@ -469,6 +692,133 @@ mod tests {
         ));
         let _ = std::fs::remove_file(&p);
         Journal::create_as(&p, "t", 0).unwrap()
+    }
+
+    /// fleet 端点测试用的两仓舰队（各自 temp journal，上游 -1 / 下游 +1）。
+    fn temp_fleet() -> Fleet {
+        use crate::{NodeKind, NodeId, Trit};
+        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir();
+        let (pa, pb) = (
+            dir.join(format!("trit-fleet-srv-a-{}-{n}.journal", std::process::id())),
+            dir.join(format!("trit-fleet-srv-b-{}-{n}.journal", std::process::id())),
+        );
+        let _ = std::fs::remove_file(&pa);
+        let _ = std::fs::remove_file(&pb);
+        let mut a = Journal::create_as(&pa, "up", 0).unwrap();
+        let na = a.spawn(NodeId(0), NodeKind::Delta, "上游节点").unwrap();
+        a.record(na, Trit::Vulnerable, None, "确认打穿").unwrap();
+        drop(a.into_dag().unwrap());
+        let mut b = Journal::create_as(&pb, "down", 1).unwrap();
+        let nb = b.spawn(NodeId(0), NodeKind::Delta, "下游节点").unwrap();
+        b.record(nb, Trit::Hardened, None, "自身通过").unwrap();
+        drop(b.into_dag().unwrap());
+        let mut f = Fleet::new();
+        f.add("up", Journal::open_as(&pa, 0).unwrap()).unwrap();
+        f.add("down", Journal::open_as(&pb, 1).unwrap()).unwrap();
+        f
+    }
+
+    #[test]
+    fn fleet_route_read_endpoints() {
+        let f = temp_fleet();
+        let shared = std::sync::RwLock::new(f);
+        let (s, body) = route_fleet(&shared, "GET", "/v1/fleet/health", &[], "");
+        assert_eq!((s, body.trim()), (200, "ok"));
+        let (s, body) = route_fleet(&shared, "GET", "/v1/fleet/repos", &[], "");
+        assert_eq!(s, 200);
+        assert!(body.contains("up") && body.contains("down"), "{body}");
+        let (s, body) = route_fleet(&shared, "GET", "/v1/fleet/board", &[], "");
+        assert_eq!(s, 200);
+        assert!(body.starts_with("name\ttotal\thardened"), "{body}");
+        let (s, body) = route_fleet(&shared, "GET", "/v1/fleet/render", &[], "");
+        assert_eq!(s, 200);
+        assert!(!body.is_empty());
+        // verdicts：缺参 400；有参返回表
+        let (s, _) = route_fleet(&shared, "GET", "/v1/fleet/verdicts", &[], "");
+        assert_eq!(s, 400, "缺 repo");
+        let q = vec![("repo".to_string(), "down".to_string())];
+        let (s, body) = route_fleet(&shared, "GET", "/v1/fleet/verdicts", &q, "");
+        assert_eq!(s, 200);
+        assert!(body.contains("node\tverdict"), "{body}");
+        let q2 = vec![
+            ("repo".to_string(), "down".to_string()),
+            ("node".to_string(), "1".to_string()),
+        ];
+        let (s, body) = route_fleet(&shared, "GET", "/v1/fleet/verdict", &q2, "");
+        assert_eq!((s, body.trim()), (200, "+1"));
+        // 405 / 404
+        let (s, _) = route_fleet(&shared, "POST", "/v1/fleet/board", &[], "");
+        assert_eq!(s, 405);
+        let (s, _) = route_fleet(&shared, "GET", "/v1/fleet/nope", &[], "");
+        assert_eq!(s, 404);
+    }
+
+    #[test]
+    fn fleet_route_write_and_sync_end_to_end() {
+        let f = temp_fleet();
+        let shared = std::sync::RwLock::new(f);
+
+        // 声明跨仓边：up#1 → down#1，确认穿透
+        let (s, body) = route_fleet(
+            &shared,
+            "POST",
+            "/v1/fleet/links",
+            &[],
+            "up\t1\tdown\t1\t-1\t确认穿透\n",
+        );
+        assert_eq!((s, body.trim()), (200, "links=1"));
+        // 坏行拒绝
+        let (s, _) = route_fleet(&shared, "POST", "/v1/fleet/links", &[], "垃圾行\n");
+        assert_eq!(s, 400);
+
+        // sync：-1 沿边落账
+        let (s, body) = route_fleet(&shared, "POST", "/v1/fleet/sync", &[], "端到端反熵");
+        assert_eq!(s, 200, "{body}");
+        assert!(body.starts_with("landed=1"), "{body}");
+
+        // 幂等：再 sync 零落账
+        let (s, body) = route_fleet(&shared, "POST", "/v1/fleet/sync", &[], "");
+        assert_eq!(s, 200);
+        assert!(body.starts_with("landed=0"), "{body}");
+
+        // 落账事实可见：down#1 现在 -1
+        let q = vec![
+            ("repo".to_string(), "down".to_string()),
+            ("node".to_string(), "1".to_string()),
+        ];
+        let (s, body) = route_fleet(&shared, "GET", "/v1/fleet/verdict", &q, "");
+        assert_eq!((s, body.trim()), (200, "-1"));
+
+        // record 原语：人工复核复原
+        let (s, body) = route_fleet(
+            &shared,
+            "POST",
+            "/v1/fleet/record",
+            &[],
+            "down\t1\t+1\t人工复核通过",
+        );
+        assert_eq!((s, body.trim()), (200, "recorded down#1=+1"));
+        let (s, body) = route_fleet(&shared, "GET", "/v1/fleet/verdict", &q, "");
+        assert_eq!((s, body.trim()), (200, "+1"));
+    }
+
+    #[test]
+    fn fleet_server_tcp_smoke() {
+        use crate::server::client;
+        let f = temp_fleet();
+        let srv = FleetServer::new(f);
+        let addr = srv
+            .serve(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
+            .unwrap();
+        let (s, body) = client::get(addr, "/v1/fleet/health").unwrap();
+        assert_eq!((s, body.trim()), (200, "ok"));
+        let (s, _) = client::post(addr, "/v1/fleet/links", "up\t1\tdown\t1\t-1\t穿透\n").unwrap();
+        assert_eq!(s, 200);
+        let (s, body) = client::post(addr, "/v1/fleet/sync", "tcp 反熵").unwrap();
+        assert_eq!(s, 200);
+        assert!(body.starts_with("landed=1"), "{body}");
     }
 
     #[test]

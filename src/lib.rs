@@ -105,7 +105,7 @@ pub use recovery::{BackupVault, Inventory, Retention, SnapshotInfo};
 pub use sandbox::{FuzzReport, Sandbox};
 pub use scan::{run_scan, Evidence, Finding, NodeFold, Rule, ScanReport};
 pub use scheduler::{drain_plan, Handler, JournalHandler, Scheduler, Task, WorkReport};
-pub use server::Server;
+pub use server::{FleetServer, Server};
 pub use snapshot::SnapshotMeta;
 pub use supply::{audit, encode_baseline, fingerprint, parse_baseline, parse_lock, Pin, SupplyFinding, SupplyKind};
 pub use sync::{anti_entropy, merge_replicas, DeferredDelta, LogFrame, MergeOutcome};

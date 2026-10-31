@@ -50,6 +50,7 @@ DAG 上传播。trit-immune 就是那个域层。它是 trit-core `Ternary` 的�
 | `template` | 默认模板：模块化脚手架 + 反上帝对象机械检查 | 模板过自身检查（测试钉死） |
 | `daemon` | LSP 实时流守护进程：stdio 帧协议 + 泛型 IO 会话（握手/didOpen/pump/通知缓存） | 帧往返/全链路落账/EOF/坏帧拒绝 |
 | `fleet::sync_cross_repo` | 跨仓 Delta 反熵：影响入账为目标仓自己的 Delta（变坏才落账幂等、+1 永不跨仓） | 落账持久化/幂等/不洗白/查询一致/非法边跳过 |
+| `FleetServer` | fleet 层 HTTP 面：聚合看板/流程图/跨仓边声明/反熵触发（TSV 同风格） | route 纯函数测试 + TCP 冒烟 |
 | `transport` | 传输抽象（TCP/Memory/可插拔 TLS） | 确定性收敛 |
 
 ## 压力测试
