@@ -48,6 +48,7 @@ DAG 上传播。trit-immune 就是那个域层。它是 trit-core `Ternary` 的�
 | `recovery` | 容错与恢复：改动前快照 + 保留期 GC + 整树恢复（undo 链可续） | 往返/围栏拒绝/损坏如实上报 |
 | `import` | 数据转移桥：git log 导入（历史一律 0 态+可选隔离）+ DAG TSV 导出 | 解析/防污染/导出形状 |
 | `template` | 默认模板：模块化脚手架 + 反上帝对象机械检查 | 模板过自身检查（测试钉死） |
+| `daemon` | LSP 实时流守护进程：stdio 帧协议 + 泛型 IO 会话（握手/didOpen/pump/通知缓存） | 帧往返/全链路落账/EOF/坏帧拒绝 |
 | `transport` | 传输抽象（TCP/Memory/可插拔 TLS） | 确定性收敛 |
 
 ## 压力测试

@@ -42,6 +42,7 @@ pub mod auth;
 pub mod bitparallel;
 pub mod cull;
 pub mod dag;
+pub mod daemon;
 pub mod delta;
 pub mod design;
 pub mod diag;
@@ -79,6 +80,7 @@ pub use adoption::{Adoption, AdoptionState, Blast, ChangePackage, Impact, Receiv
 pub use auth::{ct_eq, hmac_sha256, sha256};
 pub use bitparallel::TriWord;
 pub use cull::{cull, CullAction, CullRules};
+pub use daemon::{encode_frame, json_escape, read_frame, LspSession};
 pub use dag::{Convergence, Coupling, CrossLink, ImmuneDag, Node, NodeId, NodeKind, VerdictEvent};
 pub use delta::{merge_order, ApplyError, Delta, Stamped};
 pub use design::{

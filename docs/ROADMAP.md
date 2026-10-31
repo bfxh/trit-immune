@@ -38,6 +38,7 @@
 | 29 | **容错与恢复**（AI/人类误操作可返回：改动前快照 + 保留期周期清除 + 整树恢复——journal"追加式不可变"哲学落到文件系统层） | ✅ | `recovery.rs`：`BackupVault::capture`（先验后写 fail fast + 原子改名）/`restore`（恢复前自动 capture 现场，undo 链可续）/`gc`（份数+天数双上限，顺带清 `.tmp` 残留与损坏目录）/根围栏拒 `..` 逃逸/损坏快照如实上报（`Inventory::corrupt`）不静默 |
 | 30 | **数据转移桥**（从 Git/GitHub 等方便转移：转入走防污染协议，转出 git-friendly） | ✅ | `import.rs`：`parse_git_log`（`\x1e/\x1f` 分隔纯函数）+ `collect_git_log`（git CLI 便捷封装，固定参数无注入面）+ `import_commits`（每条 commit → Message **0 态**入账——历史是事实不是裁决，作者声称≠已验证；外部仓库整批自动隔离）+ `export_dag_tsv`（全量导出，恒 6 列可 diff） |
 | 31 | **默认项目模板**（高维护性脚手架：无上帝对象从第一天开始，且机器可查） | ✅ | `template.rs`：`scaffold`（模块化骨架：lib.rs 只装配、小模块单一职责、测试/文档齐备）+ `audit_discipline`（反上帝对象机械判据：单文件行数/公开项上限 → 0 态候选）；**模板生成物必须通过自身纪律检查**（测试钉死） |
+| 32 | **LSP 实时流守护进程**（rust-analyzer 实时桥的协议+会话层：内核零进程创建，spawn 留给部署层） | ✅ | `daemon.rs`：`encode_frame/read_frame`（LSP over stdio 帧协议，纯函数）+ `LspSession`（**泛型 IO**——子进程 stdio/TCP/测试内存流同一代码路径；initialize 握手 + didOpen/didSave + `pump` 泵读 + 请求应答途中通知缓存不丢消息）+ 全链路测试：握手→didOpen→pump→`LspBridge`→journal 落账（E→-1）；部署层集成方式（`Command::new` + stdio）在模块文档给出参考实现 |
 
 ### 标签语义澄清（2026-10-31）
 
