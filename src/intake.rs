@@ -153,6 +153,41 @@ pub fn intake_pr(
     })
 }
 
+/// 供应链审计入账：基线 vs 当前锁文件（[`crate::supply::audit`]），
+/// 每条 finding 在 `parent` 下立一个**锚定攻击分支**（`NodeKind::AttackVector`
+/// ——merge_gate 会折叠因果链上节点的锚定攻击分支，`-1` 因此收紧门禁；
+/// 兄弟分支不殃及的语义不受影响）并按三值裁决入账。
+/// `-1`（新依赖/checksum 变化）冻结门禁，`+1`（依赖移除）留痕。
+/// 返回立账的 finding 条数。
+pub fn intake_supply(
+    journal: &mut Journal,
+    parent: NodeId,
+    source: &str,
+    lock_now: &[crate::supply::Pin],
+    baseline: &[crate::supply::Pin],
+) -> io::Result<usize> {
+    let mut n = 0usize;
+    for f in crate::supply::audit(lock_now, baseline) {
+        let node = journal
+            .spawn(
+                parent,
+                crate::NodeKind::AttackVector,
+                &format!("供应链: {} @ {}", f.name, f.version),
+            )
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+        journal
+            .record(
+                node,
+                f.verdict,
+                None,
+                &format!("{source}: {:?}", f.kind),
+            )
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+        n += 1;
+    }
+    Ok(n)
+}
+
 /// 扫描一个目录的 Cargo.toml + .rs 文件做死依赖检测。
 pub fn scan_dir_for_dead_deps(dir: &Path) -> io::Result<Vec<DeadDep>> {
     let toml_path = dir.join("Cargo.toml");

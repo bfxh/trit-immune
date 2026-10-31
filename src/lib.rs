@@ -62,6 +62,7 @@ pub mod scan;
 pub mod scheduler;
 pub mod server;
 pub mod snapshot;
+pub mod supply;
 pub mod sync;
 pub mod taskmd;
 #[cfg(feature = "tls")]
@@ -99,6 +100,7 @@ pub use scan::{run_scan, Evidence, Finding, NodeFold, Rule, ScanReport};
 pub use scheduler::{drain_plan, Handler, JournalHandler, Scheduler, Task, WorkReport};
 pub use server::Server;
 pub use snapshot::SnapshotMeta;
+pub use supply::{audit, encode_baseline, fingerprint, parse_baseline, parse_lock, Pin, SupplyFinding, SupplyKind};
 pub use sync::{anti_entropy, merge_replicas, DeferredDelta, LogFrame, MergeOutcome};
 pub use taskmd::{ingest as ingest_md, parse as parse_md_tasks, taskbar, IngestReport, MdTask};
 pub use transport::{pull_merge_via, MemoryTransport, TcpTransport, Transport};

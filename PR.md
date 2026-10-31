@@ -43,6 +43,8 @@ DAG 上传播。trit-immune 就是那个域层。它是 trit-core `Ternary` 的�
 | `taskmd` | MD → 任务栏（打勾≠+1） | 幂等/隔离/固定点 |
 | `intake` | 死依赖检测 + 自动管线 | 死依赖/端到端 |
 | `migrate` | 日志格式迁移（v1→v2 原子替换+备份+校验） | 迁移/恢复/拒绝 |
+| `supply` | 供应链完整性：Cargo.lock 锁定 + TSV 基线比对（新依赖→-1 / checksum 变化→-1 / 移除→+1）+ 清单 SHA-256 指纹 | 投毒检测/多版本/往返/挂门禁端到端 |
+| `properties` | 性质测试：五条数学不变量 × 随机输入（门禁单调/合并交换/传播单调/重放一致/收敛单调） | xorshift64 可复现，全绿 |
 | `transport` | 传输抽象（TCP/Memory/可插拔 TLS） | 确定性收敛 |
 
 ## 压力测试

@@ -34,6 +34,7 @@
 | 24 | **落地状态机**（变更包 + 依赖图精准推送 + 已发布→已通知→已评估→已适配→已验签→已归队 + 超时默认策略[小自动/大降级] + 自动验签 + 旧路径下线倒计时 + 事件账本重放） | ✅ | `adoption.rs`：`publish/confirm_impact/mark_adapted/verify/align/tick/board/replay` |
 | 26 | **自动化 intake 管线**（外部代码 → 自动扫安全 + 死依赖检测 → 自动隔离入账 → 调度器 drain → 智能体处理） | ✅ | `intake.rs`：`find_dead_deps`（Cargo.toml vs use/:: 交叉比对）+ `intake_pr`（全自动管线：扫→死依赖→隔离→等智能体，扫描器永不 +1） |
 | 27 | **性质测试**（例子测试说"这个输入对"，性质测试说"任何输入都对"：门禁单调 / 合并交换 / 传播单调 / 重放一致 / 收敛单调，五条不变量 × 确定性随机输入） | ✅ | `tests/properties.rs`（xorshift64 固定种子可复现；GOAL.md 升级①"形式化验证"的落地形态——K3 AND 单调性、HLC 全序归并、"日志即数据库"、(min,max) 半环的充分条件验证） |
+| 28 | **供应链完整性**（GOAL.md 升级②：依赖投毒 / dependency confusion / 锁文件篡改的确定性防线——Cargo.lock `[[package]]` 解析 + TSV 基线比对：新依赖→`-1`、checksum 变化→`-1`（Dispositive）、移除→`+1`；Cargo.toml SHA-256 清单指纹） | ✅ | `supply.rs`（`parse_lock/audit/encode_baseline/parse_baseline/fingerprint`，零网络零第三方）+ `intake::intake_supply`（finding 以**锚定攻击分支**挂 parent，`-1` 收紧 merge_gate；兄弟分支不殃及语义不变） |
 
 ### 标签语义澄清（2026-10-31）
 
