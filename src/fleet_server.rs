@@ -1,7 +1,7 @@
 //! fleet 层的 HTTP 面（从 `crate::server` 拆出——上游 module budget：
 //! 单文件 ≤800 行）：`FleetServer` + `route_fleet` 纯函数路由。
 //!
-//! 端点（全部 TSV 文本，与单仓 [`crate::server::route`] 同风格）：
+//! 端点（全部 TSV 文本，与单仓 server 的 `route` 同风格）：
 //! - `GET  /v1/fleet/health` — 存活
 //! - `GET  /v1/fleet/repos` — 仓名列表（每行一个）
 //! - `GET  /v1/fleet/board` — 聚合收敛表（name/total/hardened/ratio/suspects/quarantined）
