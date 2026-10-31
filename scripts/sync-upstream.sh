@@ -22,7 +22,9 @@ step() { printf '\n== %s\n' "$*"; }
 die() { printf '错误：%s\n' "$*" >&2; exit 1; }
 
 [ -d "$IMMUNE/.git" ] || die "$IMMUNE 不是 git 仓库"
-[ -d "$UPSTREAM/.git" ] || die "$UPSTREAM 不是 git 仓库"
+# worktree 的 .git 是指针文件不是目录，用 rev-parse 判才认
+git -C "$UPSTREAM" rev-parse --git-dir >/dev/null 2>&1 \
+  || die "$UPSTREAM 不是 git 仓库"
 [ -d "$PATCHES" ] || die "补丁目录不存在：$PATCHES"
 
 step "1/5 fetch 本仓库 $BRANCH"
