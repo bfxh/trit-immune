@@ -56,6 +56,7 @@ pub mod attack;
 pub mod attest;
 pub mod auth;
 pub mod bitparallel;
+pub mod compat;
 pub mod cull;
 #[cfg(feature = "full")]
 pub mod daemon;

@@ -115,6 +115,13 @@ fn cmd_init(args: &[String]) -> Result<(), CliError> {
     if path.exists() {
         return Err(CliError::Runtime(format!("{} 已存在", path.display())));
     }
+    // `trit init ./new-repo` 应当像 git init 一样把目录一起建出来：
+    // 少这一步时 Journal::create 只会抛 os error 3（路径不存在），用户看不出是 init 的锅。
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            CliError::Runtime(format!("创建账本目录 {} 失败：{e}", parent.display()))
+        })?;
+    }
     Journal::create_as(&path, &title, 0)?;
     println!("初始化账本 {}（根：{title}）", path.display());
     Ok(())
@@ -461,6 +468,25 @@ mod tests {
 
     fn s(v: impl Into<String>) -> String {
         v.into()
+    }
+
+    #[test]
+    fn init_creates_missing_directories_and_refuses_overwrite() {
+        let base = tmpdir("init-missing");
+        let target = base.join("nested").join("brand-new");
+
+        run(&[s("init"), s(target.to_string_lossy().to_string())])
+            .expect("init 应能把不存在的父目录一起建出来");
+        assert!(
+            target.join(DEFAULT_LEDGER).is_file(),
+            "init 后账本文件必须存在"
+        );
+
+        let again = run(&[s("init"), s(target.to_string_lossy().to_string())]);
+        assert!(
+            matches!(again, Err(CliError::Runtime(_))),
+            "重复 init 不该静默覆盖已有账本：{again:?}"
+        );
     }
 
     #[test]

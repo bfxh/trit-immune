@@ -44,8 +44,8 @@ trit 生态不搞三进制原教旨主义：
 
 1. **本地双形态验证**：
    ```text
-   cargo test                     # full 形态：全部 221（默认）
-   cargo test --no-default-features   # 内核形态：146（上游将收到的）
+   cargo test                     # full 形态：全部 234（默认；2026-11-01 独立仓实测）
+   cargo test --no-default-features   # 内核形态：154（上游将收到的）
    ```
    内核形态编译通过 = 工具层与内核零反向依赖（当前已解耦：json_escape 归
    json.rs、export_dag_tsv 归 journal.rs、adoption 归工具层）。
