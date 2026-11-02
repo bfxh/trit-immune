@@ -9,7 +9,7 @@
 //!   URL 请求；任何未来出网一律走 [`crate::net::check_url`]。
 
 use crate::design::{self, DesignArea, PrIntake};
-use crate::diag::{self, Severity};
+use crate::diag::{self, Diagnostic, Severity};
 #[cfg(test)]
 use crate::fleet::Fleet;
 use crate::journal::Journal;
@@ -57,13 +57,94 @@ impl Server {
         });
         Ok(bound)
     }
+
+    /// TLS 直连形态（`tls` feature）：每连接先握手再进同一个连接循环。
+    /// 语义与 [`serve`] 逐字一致——**只有传输层换了，路由/账本/纪律全同**。
+    /// 证书生产用 CA 签发；测试用 `tls::generate_self_signed`（见 [`crate::tls`]）。
+    #[cfg(feature = "tls")]
+    pub fn serve_tls(
+        &self,
+        addr: SocketAddr,
+        config: rustls::ServerConfig,
+    ) -> io::Result<SocketAddr> {
+        let listener = TcpListener::bind(addr)?;
+        let bound = listener.local_addr()?;
+        let config = Arc::new(config);
+        let shared = Arc::clone(&self.journal);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(sock) = stream else { continue };
+                let shared = Arc::clone(&shared);
+                let config = Arc::clone(&config);
+                std::thread::spawn(move || {
+                    // 明文客户端连进来会在握手处失败——如实丢弃，不当 HTTP 处理
+                    let Ok(mut tls) = crate::tls::accept(&config, sock) else {
+                        return;
+                    };
+                    let _ = handle_conn(&mut tls, &shared);
+                    // 优雅关闭：TLS 要求 close_notify，裸 EOF 会被对端 rustls 客户端
+                    // 当协议错误（UnexpectedEof）——与明文版"写完即关"在这里分叉
+                    tls.conn.send_close_notify();
+                    let _ = tls.flush();
+                });
+            }
+        });
+        Ok(bound)
+    }
 }
 
-fn handle_conn(stream: &mut TcpStream, journal: &RwLock<Journal>) -> io::Result<()> {
+fn handle_conn<S: std::io::Read + std::io::Write>(
+    stream: &mut S,
+    journal: &RwLock<Journal>,
+) -> io::Result<()> {
     let (method, path, query, body) = read_request(stream)?;
     let (status, text) = route(journal, &method, &path, &query, &body);
     let resp = format_response(status, &text);
     stream.write_all(resp.as_bytes())
+}
+
+/// 检查类层落账（diag/lsp 共用同一语义与同一响应形状）：
+/// 任一 error → 层 `-1`；否则任一 warning → `0`；干净 → `+1`（检查的通过是权威结论）。
+fn record_check_layer(
+    journal: &RwLock<Journal>,
+    node: u32,
+    layer: &str,
+    diags: &[Diagnostic],
+) -> (u16, String) {
+    let verdict = diag::layer_verdict(diags);
+    let errors = diags
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .count();
+    let warnings = diags
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
+        .count();
+    let len = journal.read().expect("锁中毒").dag().nodes().len() as u32;
+    if node >= len {
+        return (404, format!("节点 #{node:02} 不存在\n"));
+    }
+    let applied = {
+        let mut j = journal.write().expect("锁中毒");
+        j.append_delta(&crate::Delta::Record {
+            id: crate::NodeId(node),
+            verdict,
+            evidence: None,
+            note: format!("{layer}：errors={errors} warnings={warnings}（检查类，可为 +1）"),
+        })
+    };
+    match applied {
+        Ok(()) => (
+            200,
+            format!(
+                "diagnostics={} errors={} warnings={} layer={verdict} check_may_plus1=true\n",
+                diags.len(),
+                errors,
+                warnings
+            ),
+        ),
+        Err(e) => (500, format!("写入失败：{e}\n")),
+    }
 }
 
 fn route(
@@ -178,55 +259,56 @@ fn route(
             Err(e) => (400, format!("帧解析失败：{e}\n")),
         },
         ("POST", "/v1/diag") => {
-            // 编译器管线桥：body = rustc --message-format=json 流
+            // 编译器管线桥：body = 编译器诊断输出。?format= rustc(默认)|tsc|gcc|eslint
             let Some((_, v)) = query.iter().find(|(k, _)| k == "node") else {
                 return (400, "缺 node 参数\n".into());
             };
             let Ok(node) = v.parse::<u32>() else {
                 return (400, format!("node 非数字：{v}\n"));
             };
-            // 守卫：垃圾输入拒绝（避免空 POST 把节点"洗"成 +1）
-            if body.trim().is_empty() || !diag::has_json(body) {
-                return (
-                    400,
-                    "无诊断数据（应为 rustc --message-format=json 流）\n".into(),
-                );
-            }
-            let diags = diag::parse_rustc_stream(body);
-            let verdict = diag::layer_verdict(&diags);
-            let errors = diags
+            let format = query
                 .iter()
-                .filter(|d| d.severity == Severity::Error)
-                .count();
-            let warnings = diags
-                .iter()
-                .filter(|d| d.severity == Severity::Warning)
-                .count();
-            let len = journal.read().expect("锁中毒").dag().nodes().len() as u32;
-            if node >= len {
-                return (404, format!("节点 #{node:02} 不存在\n"));
-            }
-            let applied = {
-                let mut j = journal.write().expect("锁中毒");
-                j.append_delta(&crate::Delta::Record {
-                    id: crate::NodeId(node),
-                    verdict,
-                    evidence: None,
-                    note: format!("编译层：errors={errors} warnings={warnings}（检查类，可为 +1）"),
-                })
+                .find(|(k, _)| k == "format")
+                .map(|(_, v)| v.as_str())
+                .unwrap_or("rustc");
+            let diags = match format {
+                "rustc" => {
+                    // 守卫：垃圾输入拒绝（避免空 POST 把节点"洗"成 +1）；
+                    // rustc 干净构建也输出 JSON（build-finished），所以 ≥1 行 JSON 是硬要求
+                    if body.trim().is_empty() || !diag::has_json(body) {
+                        return (
+                            400,
+                            "无诊断数据（应为 rustc --message-format=json 流）\n".into(),
+                        );
+                    }
+                    diag::parse_rustc_stream(body)
+                }
+                "tsc" => {
+                    // tsc 干净构建 stdout 为空——调用方约定发 `{}` 占位（非 JSON 横幅照发）；
+                    // 守卫同 rustc：至少一行合法 JSON，垃圾输入照样 400
+                    if body.trim().is_empty() || !diag::has_json(body) {
+                        return (400, "无诊断数据（tsc 流；干净构建发 {} 占位）\n".into());
+                    }
+                    diag::parse_tsc_stream(body)
+                }
+                // gcc/clang 与 eslint：整个 body 一个 JSON 数组（干净输出 `[]`），
+                // 不是数组 = 垃圾输入 → None → 400
+                "gcc" => match diag::parse_gcc_json(body) {
+                    Some(d) => d,
+                    None => return (400, "无诊断数据（gcc 格式应为一个 JSON 数组）\n".into()),
+                },
+                "eslint" => match diag::parse_eslint_json(body) {
+                    Some(d) => d,
+                    None => return (400, "无诊断数据（eslint 格式应为一个 JSON 数组）\n".into()),
+                },
+                other => {
+                    return (
+                        400,
+                        format!("未知 format：{other}（rustc|tsc|gcc|eslint）\n"),
+                    )
+                }
             };
-            match applied {
-                Ok(()) => (
-                    200,
-                    format!(
-                        "diagnostics={} errors={} warnings={} layer={verdict} check_may_plus1=true\n",
-                        diags.len(),
-                        errors,
-                        warnings
-                    ),
-                ),
-                Err(e) => (500, format!("写入失败：{e}\n")),
-            }
+            record_check_layer(journal, node, "编译层", &diags)
         }
         ("POST", "/v1/scan") => match parse_scan_body(body) {
             Ok(snippets) => {
@@ -274,40 +356,7 @@ fn route(
                 .into_iter()
                 .map(|d| d.into_diag())
                 .collect::<Vec<_>>();
-            let verdict = diag::layer_verdict(&diags);
-            let errors = diags
-                .iter()
-                .filter(|d| d.severity == Severity::Error)
-                .count();
-            let warnings = diags
-                .iter()
-                .filter(|d| d.severity == Severity::Warning)
-                .count();
-            let len = journal.read().expect("锁中毒").dag().nodes().len() as u32;
-            if node >= len {
-                return (404, format!("节点 #{node:02} 不存在\n"));
-            }
-            let applied = {
-                let mut j = journal.write().expect("锁中毒");
-                j.append_delta(&crate::Delta::Record {
-                    id: crate::NodeId(node),
-                    verdict,
-                    evidence: None,
-                    note: format!("LSP 层：errors={errors} warnings={warnings}（检查类，可为 +1）"),
-                })
-            };
-            match applied {
-                Ok(()) => (
-                    200,
-                    format!(
-                        "diagnostics={} errors={} warnings={} layer={verdict} check_may_plus1=true\n",
-                        diags.len(),
-                        errors,
-                        warnings
-                    ),
-                ),
-                Err(e) => (500, format!("写入失败：{e}\n")),
-            }
+            record_check_layer(journal, node, "LSP 层", &diags)
         }
         ("POST", "/v1/intake") => {
             // 设计决策生产线入口：分类（新决策/执行既有/退回设计队列）
@@ -368,7 +417,9 @@ fn parse_scan_body(body: &str) -> Result<Vec<(crate::NodeId, String)>, String> {
 /// 一次 HTTP 请求解析结果：方法 / 路径 / 查询对 / 请求体。
 type ParsedRequest = (String, String, Vec<(String, String)>, String);
 
-pub(crate) fn read_request(stream: &mut TcpStream) -> io::Result<ParsedRequest> {
+pub(crate) fn read_request<S: std::io::Read + std::io::Write>(
+    stream: &mut S,
+) -> io::Result<ParsedRequest> {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 4096];
     let header_end = loop {

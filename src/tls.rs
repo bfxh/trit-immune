@@ -1,10 +1,24 @@
 //! TLS 传输层（`tls` feature flag 启用，默认关闭保持零依赖）。
 //!
 //! 生产部署推荐：**反向代理（nginx/caddy）终结 TLS**，内核只看到明文 TCP + HMAC。
-//! 本模块供**不经代理的直连场景**使用（内网点对点同步）。
+//! 本模块供**不经代理的直连场景**使用（内网点对点）：
+//! - [`Server::serve_tls`](crate::server::Server::serve_tls) /
+//!   [`FleetServer::serve_tls`](crate::fleet_server::FleetServer::serve_tls)：
+//!   HTTP 面的 TLS 直连（先握手再进同一个连接循环，路由/账本/纪律全同明文版）；
+//! - [`accept`]/[`connect`]：把一条已连 TCP 流升级成 TLS 流的薄包装
+//!   （握手惰性——首次读写时完成；明文客户端会在握手处失败，服务端如实丢弃）。
 //!
-//! 证书：生产用 CA 签发证书；测试用 `generate_self_signed` 自签。
+//! 认证与加密分层：TLS 管**管道**（机密性/对端身份），PSK 帧认证
+//! （`sync::sign_frame`/`verify_frame`）管**内容**——两层独立，叠加不冲突。
+//! 证书：生产用 CA 签发；测试用 `generate_self_signed` 自签。
 #![cfg(feature = "tls")]
+
+/// rustls 的再导出：调用方（server 的 TLS 形态、测试）需要 `ServerConfig`
+/// 等类型，但 rustls 是可选依赖——只能从这里拿，不能裸引。
+pub use rustls;
+
+use std::io;
+use std::net::TcpStream;
 
 /// TLS 配置：证书路径 + 私钥路径。
 #[derive(Debug, Clone)]
@@ -34,6 +48,38 @@ pub fn server_config(cert_pem: &str, key_pem: &str) -> Result<rustls::ServerConf
         .with_single_cert(certs, key)
         .map_err(|e| format!("服务端 TLS 配置失败：{e}"))?;
     Ok(config)
+}
+
+/// 把一条已连 TCP 流升级为 TLS 服务端流（首次读写时完成握手）。
+/// 每条 TLS 连接的读写上限。没有它，明文或畸形客户端会让服务端线程
+/// 永远等在握手上（实测把一个 `cargo test` 挂死 >60 秒），
+/// 一个只会拒绝明文的 TLS 端口照样能被廉价拖光线程。
+pub const CONNECTION_TIMEOUT: Option<std::time::Duration> =
+    Some(std::time::Duration::from_secs(30));
+
+pub fn accept(
+    config: &rustls::ServerConfig,
+    sock: TcpStream,
+) -> io::Result<rustls::StreamOwned<rustls::ServerConnection, TcpStream>> {
+    // 先设期限再交出去：rustls 的握手是惰性的（首次读写才发生），在这里设才对整条连接生效
+    sock.set_read_timeout(CONNECTION_TIMEOUT)?;
+    sock.set_write_timeout(CONNECTION_TIMEOUT)?;
+    let conn = rustls::ServerConnection::new(std::sync::Arc::new(config.clone()))
+        .map_err(|e| io::Error::other(e.to_string()))?;
+    Ok(rustls::StreamOwned::new(conn, sock))
+}
+
+/// 把一条已连 TCP 流升级为 TLS 客户端流（首次读写时完成握手）。
+pub fn connect(
+    config: &rustls::ClientConfig,
+    server_name: &str,
+    sock: TcpStream,
+) -> io::Result<rustls::StreamOwned<rustls::ClientConnection, TcpStream>> {
+    let name = rustls::pki_types::ServerName::try_from(server_name.to_string())
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, format!("服务器名不合法：{e}")))?;
+    let conn = rustls::ClientConnection::new(std::sync::Arc::new(config.clone()), name)
+        .map_err(|e| io::Error::other(e.to_string()))?;
+    Ok(rustls::StreamOwned::new(conn, sock))
 }
 
 /// 创建 rustls 客户端配置（信任自签证书或跳过校验——仅测试用）。
