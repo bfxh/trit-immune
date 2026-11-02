@@ -127,7 +127,10 @@ pub use design::{
     classify, grade, ArchTest, DesignArea, DesignQueue, PrIntake, QueueEntry, QueueStatus, Routing,
     Statute, Statutes, Tier, TierPolicy, Violation,
 };
-pub use diag::{layer_verdict, parse_rustc_stream, Diagnostic, Severity};
+pub use diag::{
+    layer_verdict, parse_eslint_json, parse_gcc_json, parse_rustc_stream, parse_tsc_stream,
+    Diagnostic, Severity,
+};
 #[cfg(feature = "full")]
 pub use fleet::{AttackChain, AttackChains, ChainStep, ChainVia, CrossRepoDelta, Fleet, FleetRow};
 #[cfg(feature = "full")]
