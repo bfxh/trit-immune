@@ -99,7 +99,28 @@ say "clone 与源账本收敛度量一致"
 out="$(run merge "$CLONE")"
 expect "合并" "$out" "merge 采纳副本增量"
 
-# 10) 未知命令必须非零退出并报命令名
+# 10) lock：依赖坐标入账（外部事实 = 0 态），且幂等不重复建节点
+LOCKF="$WORK/Cargo.lock"
+cat > "$LOCKF" <<'LOCK'
+# Cargo.lock v3
+[[package]]
+name = "shared-lib"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aaaa"
+
+[[package]]
+name = "other"
+version = "0.1.0"
+LOCK
+out="$(run lock "$LOCKF")"
+expect "坐标入账 2 条：新建 2，复用 0" "$out" "lock 把锁文件里每个解析结果立成坐标节点"
+out="$(run lock "$LOCKF")"
+expect "坐标入账 2 条：新建 0，复用 2" "$out" "同锁文件再跑不重复建节点（幂等）"
+out="$(run log -n 20)"
+expect "消费 COORD shared-lib@1.2.0" "$out" "坐标节点连回本仓根的消费边入账"
+
+# 11) 未知命令必须非零退出并报命令名
 if out="$("$BIN" nosuchcommand 2>&1)"; then
   fail "未知命令竟然成功"
 fi
