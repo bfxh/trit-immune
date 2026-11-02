@@ -56,6 +56,8 @@ pub mod attack;
 pub mod attest;
 pub mod auth;
 pub mod bitparallel;
+#[cfg(feature = "full")]
+pub mod coords;
 pub mod cull;
 #[cfg(feature = "full")]
 pub mod daemon;
@@ -112,6 +114,8 @@ pub use adoption::{Adoption, AdoptionState, Blast, ChangePackage, Impact, Receiv
 pub use attest::{attest, verify, PREDICATE_TYPE, STATEMENT_TYPE};
 pub use auth::{ct_eq, hmac_sha256, sha256};
 pub use bitparallel::{tri_pack, tri_unpack, PackError, TriWord};
+#[cfg(feature = "full")]
+pub use coords::{attach_lock, declare_provider, CoordDecl, CoordGap, CoordKey, GapReason, Role};
 pub use cull::{cull, CullAction, CullRules};
 #[cfg(feature = "full")]
 pub use daemon::{encode_frame, read_frame, LspSession};
@@ -129,7 +133,6 @@ pub use fleet::{AttackChain, AttackChains, ChainStep, ChainVia, CrossRepoDelta, 
 #[cfg(feature = "full")]
 pub use harvest::{harvest, HarvestReport, Registry};
 pub use hlc::{Clock, Hlc};
-#[cfg(feature = "full")]
 #[cfg(feature = "full")]
 pub use import::{collect_git_log, import_commits, parse_git_log, CommitRecord};
 #[cfg(feature = "full")]

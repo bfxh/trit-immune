@@ -32,6 +32,10 @@ pub struct Fleet {
     repos: Vec<(String, Journal)>,
     cross_links: Vec<CrossRepoLink>,
     link_ledger: Option<PathBuf>,
+    /// 依赖坐标声明（见 [`crate::coords`]）：谁提供这个坐标、谁实际用到它。
+    provides: Vec<crate::coords::CoordDecl>,
+    uses: Vec<crate::coords::CoordDecl>,
+    coord_ledger: Option<PathBuf>,
 }
 
 /// 聚合收敛表的一行。
@@ -129,11 +133,12 @@ impl Fleet {
     /// 聚合流程图：每仓一节（收敛头 + render）+ 跨仓依赖边列表。
     pub fn render_with_edges(&self) -> String {
         let mut out = String::new();
+        let edges = self.cross_edges();
         let _ = writeln!(
             out,
             "══ 舰队　{} 仓　跨仓污染边 {} 条 ══",
             self.repos.len(),
-            self.cross_links.len()
+            edges.len()
         );
         for (n, j) in &self.repos {
             let cv = j.dag().convergence();
@@ -148,9 +153,9 @@ impl Fleet {
             );
             out.push_str(&j.dag().render());
         }
-        if !self.cross_links.is_empty() {
+        if !edges.is_empty() {
             out.push_str("\n── 跨仓依赖边 ──\n");
-            for l in &self.cross_links {
+            for l in &edges {
                 let _ = writeln!(
                     out,
                     "{}#{:02} → {}#{:02}　[{} {}]　{}",
@@ -352,7 +357,7 @@ impl Fleet {
                 g.link(off + l.from.0 as usize, off + l.to.0 as usize, l.pass);
             }
         }
-        for l in &self.cross_links {
+        for l in &self.cross_edges() {
             let (Some(fo), Some(to)) = (base.get(&l.from.0), base.get(&l.to.0)) else {
                 continue;
             };
@@ -462,6 +467,120 @@ impl Fleet {
             });
         }
         Ok(results)
+    }
+
+    // ---- 依赖坐标（共享库在多项目下的身份；实现见 [`crate::coords`]）----
+
+    /// 打开坐标注册表（追加式；声明影响裁决，账外无数据）。
+    pub fn open_coord_ledger(&mut self, path: impl Into<PathBuf>) {
+        self.coord_ledger = Some(path.into());
+    }
+
+    pub(crate) fn coord_ledger_path(&self) -> Option<PathBuf> {
+        self.coord_ledger.clone()
+    }
+
+    pub(crate) fn push_provider(&mut self, d: crate::coords::CoordDecl) {
+        self.provides.push(d);
+    }
+
+    /// 把已在 DAG 里的坐标节点登记进声明表（不重复登记）。
+    pub(crate) fn adopt_use(&mut self, repo: &str, node: NodeId, coord: &crate::coords::CoordKey) {
+        if !self
+            .uses
+            .iter()
+            .any(|d| d.repo == repo && d.coord.key() == coord.key())
+        {
+            self.uses.push(crate::coords::CoordDecl {
+                repo: repo.to_string(),
+                node,
+                coord: coord.clone(),
+            });
+        }
+    }
+
+    pub fn provides(&self) -> &[crate::coords::CoordDecl] {
+        &self.provides
+    }
+
+    pub fn uses(&self) -> &[crate::coords::CoordDecl] {
+        &self.uses
+    }
+
+    /// 声明某仓某节点是某个依赖坐标的裁决出处。
+    pub fn declare_provider(
+        &mut self,
+        repo: &str,
+        node: NodeId,
+        coord: crate::coords::CoordKey,
+    ) -> io::Result<()> {
+        crate::coords::declare_provider(self, repo, node, coord)
+    }
+
+    /// 把一份 `Cargo.lock` 入账为该仓的消费坐标节点（幂等；`build` 见 [`crate::coords`]）。
+    pub fn attach_lock(
+        &mut self,
+        repo: &str,
+        lock_text: &str,
+        build: Option<&str>,
+    ) -> io::Result<crate::coords::AttachReport> {
+        crate::coords::attach_lock(self, repo, lock_text, build)
+    }
+
+    /// 坐标派生边（精确匹配才连；不落注册表，是声明的确定性视图）。
+    pub fn coord_edges(&self) -> Vec<CrossRepoLink> {
+        crate::coords::derive_edges(&self.provides, &self.uses)
+    }
+
+    /// **全部跨仓边** = 人工/接口声明的边 ⊕ 坐标派生的边。
+    /// 传播视图（[`contamination`]）、渲染、攻击链、落地影响都读这一个口径——
+    /// 免得坐标边只在落账时生效、查询视图却看不见（两套真相）。
+    pub fn cross_edges(&self) -> Vec<CrossRepoLink> {
+        let mut v = self.cross_links.clone();
+        v.extend(self.coord_edges());
+        v
+    }
+
+    /// 坐标级跨仓落账（语义与 [`sync_cross_repo`] 同一套纪律，只是边来自坐标声明）。
+    pub fn sync_coordinates(&mut self, note: &str) -> io::Result<Vec<CrossRepoDelta>> {
+        crate::coords::sync(self, note)
+    }
+
+    /// 坐标缺口清单（每一条都是 0 态候选：**不匹配不静默**）。
+    pub fn coord_gaps(&self) -> Vec<crate::coords::CoordGap> {
+        crate::coords::gaps(self, &self.provides, &self.uses)
+    }
+
+    /// 坐标视图（TSV：PROV/USE/GAP 三段，供 HTTP 与 CLI 直读）。
+    pub fn render_coords(&self) -> String {
+        crate::coords::render(self)
+    }
+
+    /// 从坐标注册表读回声明（追加式；加载期不验证，失效声明由 [`coord_gaps`] 上报）。
+    /// 返回 (提供者数, 消费者数, 坏行数)。已存在的 (仓, 坐标键) 不重复入账。
+    pub fn load_coords(&mut self, path: &Path) -> io::Result<(usize, usize, usize)> {
+        let (provides, uses, bad) = crate::coords::load_lines(path)?;
+        let mut np = 0;
+        let mut nu = 0;
+        for d in provides {
+            if self.provides.iter().any(|e| e == &d) {
+                continue;
+            }
+            self.provides.push(d);
+            np += 1;
+        }
+        for d in uses {
+            if self
+                .uses
+                .iter()
+                .any(|e| e.repo == d.repo && e.coord.key() == d.coord.key())
+            {
+                continue;
+            }
+            self.uses.push(d);
+            nu += 1;
+        }
+        Ok((np, nu, bad))
     }
 
     /// **多跳攻击链枚举**（fleet 级渗透路径报告）——实现已拆至

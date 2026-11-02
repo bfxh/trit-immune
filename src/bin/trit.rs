@@ -21,7 +21,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use trit_immune::{delta, parse_stamped_line, Journal, NodeId, NodeKind, Trit};
+use trit_immune::{coords, delta, parse_stamped_line, supply, Journal, NodeId, NodeKind, Trit};
 
 const DEFAULT_LEDGER: &str = "repo.tritj";
 
@@ -77,6 +77,7 @@ fn run(args: &[String]) -> Result<(), CliError> {
         "gate" => cmd_gate(rest),
         "suspects" => cmd_suspects(rest),
         "sync-git" => cmd_sync_git(rest),
+        "lock" => cmd_lock(rest),
         "help" | "--help" | "-h" => {
             println!("{}", help_text());
             Ok(())
@@ -424,6 +425,53 @@ fn cmd_sync_git(args: &[String]) -> Result<(), CliError> {
     Ok(())
 }
 
+/// `trit lock <Cargo.lock> [-f file] [--build X]`：**依赖坐标入账**。
+///
+/// 把本项目锁文件里实际解析到的每个依赖，立成账本中的坐标节点（**0 态**——
+/// 外部事实入账，未验证不算安全），并连一条"消费 → 本仓根"的边，让库被打穿时
+/// 本仓的门禁与有效裁决直接看见。`--build` 给 feature/构建参数指纹
+/// （`Cargo.lock` 不记 feature 集，不传就只锁到 checksum 这一层）。
+/// 幂等：同坐标再跑不重复建节点。
+fn cmd_lock(args: &[String]) -> Result<(), CliError> {
+    let (path, rest) = split_ledger(args);
+    let lock_arg = rest
+        .first()
+        .ok_or_else(|| CliError::Usage("lock 需要 <Cargo.lock>".into()))?;
+    let mut build: Option<String> = None;
+    let mut i = 1usize;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--build" => {
+                build = rest.get(i + 1).cloned();
+                if build.is_none() {
+                    return Err(CliError::Usage("--build 需要跟一个值".into()));
+                }
+                i += 2;
+            }
+            _ => i += 1,
+        }
+    }
+    let text = std::fs::read_to_string(lock_arg)
+        .map_err(|e| CliError::Runtime(format!("读 {lock_arg} 失败：{e}")))?;
+    let pins = supply::parse_lock(&text);
+    let mut j = Journal::open_as(&path, 0)
+        .map_err(|e| CliError::Runtime(format!("打开账本 {} 失败：{e}", path.display())))?;
+    let report = coords::attach_pins(&mut j, &pins, build.as_deref())
+        .map_err(|e| CliError::Runtime(format!("坐标入账失败：{e}")))?;
+    println!(
+        "坐标入账 {} 条：新建 {}，复用 {}（账本 {}）",
+        report.all.len(),
+        report.created.len(),
+        report.reused,
+        path.display()
+    );
+    for (n, c) in &report.created {
+        println!("  #{:02} {}", n.0, c.key());
+    }
+    drop(j.into_dag().map_err(|e| CliError::Runtime(e.to_string()))?);
+    Ok(())
+}
+
 fn help_text() -> String {
     "trit —— journal 代替 git 的命令行（三进制免疫账本）
 
@@ -441,6 +489,8 @@ fn help_text() -> String {
   suspects [-f file]        0 态待办队列
   sync-git <repo> [-f file] [--open]
                             git 共存桥：提交历史吸收进账本（0 态+默认隔离）
+  lock <Cargo.lock> [-f file] [--build X]
+                            依赖坐标入账：本项目实际解析到哪个库产物（幂等）
   help                      本帮助
 
 默认账本：当前目录 repo.tritj（-f 可指定）。"
