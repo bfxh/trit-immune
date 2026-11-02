@@ -18,7 +18,7 @@
 | 5 | 结构耦合检测（不靠 LLM，直接从图上读） | ✅（图级） | `dag::coupling`：扇入/扇出 + 入/出边最坏通过值 |
 | 6 | 本地服务器 + 联网 | ✅ | `server.rs` + `net::check_url`（SSRF 守卫） |
 | 7 | ADV 桥接：扫描器作为裁决源 | ✅（协议就绪） | `POST /v1/scan` + `docs/ADV-BRIDGE.md` 映射表 |
-| 8 | 编译器管线（rust-analyzer/rustc 诊断 → 裁决源） | ✅ | `json.rs` 零依赖解析器 + `diag.rs`（rustc JSON 流）+ `lsp.rs`（publishDiagnostics，0 基行号转 1 基，severity 映射）+ `POST /v1/diag?node=N` |
+| 8 | 编译器管线（多家诊断 → 裁决源） | ✅ | `json.rs` 零依赖解析器 + `diag.rs`：`parse_rustc_stream`（JSON 行流）/`parse_tsc_stream`（小写 severity 行流，无 severity 的对象与纯通知如实跳过）/`parse_gcc_json`（gcc 与 clang 同形的整体数组）/`parse_eslint_json`；**非诊断输入一律 `None` ⇒ 调用方拒绝，垃圾输入不许洗白成 `+1`**；`POST /v1/diag?node=N&format=rustc|tsc|gcc|eslint`（默认 rustc，未知格式 400 不是 200）+ `lsp.rs`（publishDiagnostics，0 基行号转 1 基） |
 | 9 | 公共流程图（完成/未完成仓库的全量图 + 自动合并流程图） | ✅（第一步） | `fleet.rs` 舰队：聚合收敛表 + 聚合流程图（每仓一节）+ 克隆副本配对同步；跨仓 Delta 边 🔜；自动合并流程图由 `policy::decide` 提供数据层 |
 | 10 | 智能体通道（多通道并发写入） | ✅（协议层） | 每智能体一个副本 + 写者 id + `/v1/deltas`；通道发现/注册 🔜 |
 | 11 | 本地调度器（扫问题、排任务，无 LLM） | ✅ | `scheduler.rs`：`drain_plan`（DAG→有限任务队列：Review/Fix/Refactor）+ worker 池（scoped threads，每任务恰好一次）+ `JournalHandler` 兜底替身；收敛到固定点测试钉死 |
@@ -26,7 +26,7 @@
 | 13 | GPU 加速（传播/点积/合并的本地 GPU 路径） | 🔗 ADV/engine 域 | 内核先保证确定性 CPU 路径；GPU 是引擎域的活 |
 | 14 | 代码级耦合（imports/调用图） | 🔗 ADV/ide 域 | 图级耦合已在内核；AST 级走 ADV 的 ide_callgraph 桥 |
 | 15 | 生态算子库 + 批处理自定义 | 🔗 **trit 域** | 算子库（三值点积/传播/打包等数值与逻辑算子）是 **bfxh/trit** 的需要；内核只消费算子，不自攒 |
-| 16 | 传输加密（TLS） | 🔜 排队 | std 无 TLS；接 rustls 时接口不变（帧层已留认证） |
+| 16 | 传输加密（TLS） | ✅ | `tls.rs`（rustls + rcgen 自签证书，`accept/connect` 包装与再导出）+ `server.rs::serve_tls` / `fleet_server.rs::serve_tls`（与明文 `serve` 同一 handle_conn，接口不变）+ `tests/tls.rs` 三形态真回环：握手往返、**明文连 TLS 端口被拒**、`/v1/diag` 与 fleet 走 TLS 仍正确入账；服务端写回后发 `close_notify` 再 flush（否则 rustls 客户端把裸 EOF 当协议错误） |
 | 17 | **概念台账**（反"换词不换设计"污染：规范名+别名+设计属性同构检测，标签解释用） | ✅ | `vocab.rs`（内核概念已预置种子） |
 | 18 | **仓库防杂乱模板**（排版规范 + 理念纪律 + 换词纪律 + 提交前清单） | ✅ | `docs/REPO-TEMPLATE.md` |
 | 19 | **收敛度量**（距"全 +1 固定点"的距离 + 折叠率，只许单向改善） | ✅ | `dag::convergence` + `vocab::absorption`，目标论文见 `docs/GOAL.md` |

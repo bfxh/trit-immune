@@ -16,8 +16,8 @@
 
 use crate::fleet::Fleet;
 use crate::server::{format_response, read_request};
-use std::io::{self, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::io;
+use std::net::{SocketAddr, TcpListener};
 use std::sync::{Arc, RwLock};
 
 /// 共享的多仓舰队服务（fleet 层的 HTTP 面，与单仓 `crate::server::Server` 平行）。
@@ -53,9 +53,43 @@ impl FleetServer {
         });
         Ok(bound)
     }
+
+    /// TLS 直连形态（`tls` feature）：先握手再进同一个连接循环。
+    /// 语义与 [`serve`] 逐字一致——只有传输层换了，路由/舰队/纪律全同。
+    #[cfg(feature = "tls")]
+    pub fn serve_tls(
+        &self,
+        addr: SocketAddr,
+        config: rustls::ServerConfig,
+    ) -> io::Result<SocketAddr> {
+        let listener = TcpListener::bind(addr)?;
+        let bound = listener.local_addr()?;
+        let config = Arc::new(config);
+        let shared = Arc::clone(&self.fleet);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(sock) = stream else { continue };
+                let shared = Arc::clone(&shared);
+                let config = Arc::clone(&config);
+                std::thread::spawn(move || {
+                    let Ok(mut tls) = crate::tls::accept(&config, sock) else {
+                        return;
+                    };
+                    let _ = handle_fleet_conn(&mut tls, &shared);
+                    // 优雅关闭：TLS 要求 close_notify（见 server.rs serve_tls 注释）
+                    tls.conn.send_close_notify();
+                    let _ = std::io::Write::flush(&mut tls);
+                });
+            }
+        });
+        Ok(bound)
+    }
 }
 
-fn handle_fleet_conn(stream: &mut TcpStream, fleet: &RwLock<Fleet>) -> io::Result<()> {
+fn handle_fleet_conn<S: std::io::Read + std::io::Write>(
+    stream: &mut S,
+    fleet: &RwLock<Fleet>,
+) -> io::Result<()> {
     let (method, path, query, body) = read_request(stream)?;
     let (status, text) = route_fleet(fleet, &method, &path, &query, &body);
     let resp = format_response(status, &text);
