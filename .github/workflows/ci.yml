@@ -93,3 +93,13 @@ jobs:
       - name: Run ledger CLI end to end
         shell: bash
         run: bash scripts/cli_smoke.sh target/debug/trit-immune
+
+  pin-interop:
+    name: git 依赖互换（pin.py 自测）
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      # patch 段拼接/还原、备份只做一次、lock 逐字节还原、commit 解析
+      - name: Pin self-test
+        run: python3 scripts/pin.py --self-test
