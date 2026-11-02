@@ -3,3 +3,8 @@
 /fuzz/artifacts/
 *.tritj.snapshot
 **/*.rs.bk
+
+# 工具脚本的缓存（scripts/pin.py 等）
+__pycache__/
+# pin 的备份目录（scripts/pin.py）
+.trit/
