@@ -91,11 +91,12 @@ export CARGO_NET_GIT_FETCH_WITH_CLI=true
 | 人类主控（0 态） | `ImmuneDag::human_review`：唯一解除隔离 / 落锤 0 的通道 |
 | Prompt 注入溯源 | `NodeKind::Message` + `ImmuneDag::quarantine`（沿因果链隔离） |
 | 合并门禁 | `ImmuneDag::merge_gate`：K3 AND 折叠 → 三态动作 |
+| 依赖坐标（谁真的用到了这个库产物） | `CoordKey` + `Fleet::attach_lock` / `trit lock`（`src/coords.rs`：坐标逐字段相等才连边，对不上的一律进 `CoordGap` 0 态清单，不静默丢边） |
 
 ## 快速开始
 
 ```bash
-cargo test                      # 234 全绿（full 默认形态，2026-11-01 独立仓实测）
+cargo test                      # 251 全绿（full 默认形态，2026-11-02 实测；内核形态 --no-default-features 155）
 cargo run --example scenario    # 端到端红蓝对抗场景演示
 ```
 

@@ -12,7 +12,7 @@
 | 层 | 模块 | 收录立场 |
 |---|---|---|
 | **内核（必收）** | trit / delta / journal / hlc / snapshot / migrate（账本）；dag / verdict / sandbox / propagate / policy / cull（裁决）；sync / transport（同步）；bitparallel / auth / kani_proofs（计算验证）；lifecycle / scheduler / design / vocab（生产线）；scan / diag / json / net（裁决源与守卫）；supply / vex / attest（供应链与出口） | ✅ 随 PR 收 |
-| **工具层（不收）** | recovery / import（git 桥）/ template / server + FleetServer / daemon / lsp / taskmd / intake / fleet（含 attack_chains）/ harvest / adoption / `trit` CLI | ❌ 本工具专属 |
+| **工具层（不收）** | recovery / import（git 桥）/ template / server + FleetServer / daemon / lsp / taskmd / intake / fleet（含 attack_chains、coords_fleet 的坐标方法面）/ coords（依赖坐标；其中 `CoordKey` / `derive_edges` / `attach_pins` 是纯函数，真要收录时可下沉内核）/ harvest / adoption / `trit` CLI | ❌ 本工具专属 |
 | **特例** | `tls`（本来就可选 feature）、`compat`（仅 PR 分支，trit-core 互操作——**上游合并时归内核**） | 按上下文 |
 
 规则一句话：**凡是"多个工具共用"的收，凡是"这个工具的人体工程"不收**。
