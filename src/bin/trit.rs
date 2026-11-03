@@ -874,7 +874,18 @@ mod tests {
             s("--build"),
             s("serde,derive"),
         ]);
-        assert!(matches!(outcome, Err(CliError::Usage(_))), "{outcome:?}");
+        // 判红本身不够——还必须是**能照着改**的判红：错误里要点名是哪一枚旗标，
+        // 并给出新旧口径的对应关系。否则「随便回一句 unknown」也能过这条断言，
+        // 而用户照样不知道自己把哪个参数写废了。
+        let err = match outcome {
+            Err(CliError::Usage(message)) => message,
+            other => panic!("未知旗标必须 Usage 判红，实际：{other:?}"),
+        };
+        assert!(err.contains("--build"), "错误没点名是哪一枚旗标：{err}");
+        assert!(
+            err.contains("--build-from"),
+            "错误没给新旧口径的对应关系，用户无法照做：{err}"
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 
