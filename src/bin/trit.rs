@@ -97,8 +97,64 @@ fn split_ledger(args: &[String]) -> (PathBuf, &[String]) {
     }
 }
 
+/// **账本路径围栏**：解析后的路径必须落在当前工作目录或系统临时目录之内。
+///
+/// trit 是 git 风格的本地 CLI：账本属于「你当前所在的仓」。CLI 参数是外部
+/// 输入，直通文件读写就是一条 path-traversal 污点链——敲错路径会改掉任意
+/// 文件。围栏做两件事：`canonicalize` 消解 `..` 与符号形态，然后要求结果
+/// 以 cwd 或 temp（已 canonical 化）为前缀；两者之外一律拒绝。
+/// temp 白名单是给「一次性/测试账本」的显式豁免（那是用户自己的临时目录，
+/// 风险面 = 用户自己的文件），常态使用全部收在 cwd 内。
+fn fence_ledger_path(raw: &std::path::Path) -> Result<PathBuf, CliError> {
+    let cwd = std::env::current_dir()
+        .map_err(|e| CliError::Runtime(format!("取当前目录失败：{e}")))?
+        .canonicalize()
+        .map_err(|e| CliError::Runtime(format!("解析当前目录失败：{e}")))?;
+    let candidate = if raw.is_absolute() {
+        raw.to_path_buf()
+    } else {
+        cwd.join(raw)
+    };
+    let canonical = match candidate.canonicalize() {
+        Ok(p) => p,
+        Err(_) => {
+            // 文件（或中间目录）尚不存在（init 允许一次建多层）：向上找最近的
+            // 真实存在祖先做 canonicalize——`..` 组分在这一步被消解——再把
+            // 中间不存在的组件原样拼回去。拼回去的部分不再含 `..`：含 `..`
+            // 的路径段必经祖先 canonicalize，逃逸由最后的 starts_with 拦。
+            let mut base = candidate.clone();
+            let mut tail: Vec<std::ffi::OsString> = Vec::new();
+            while !(base.is_dir() || base.is_file()) {
+                match (base.parent(), base.file_name()) {
+                    (Some(parent), Some(name)) => {
+                        tail.push(name.to_os_string());
+                        base = parent.to_path_buf();
+                    }
+                    _ => break,
+                }
+            }
+            let resolved = base
+                .canonicalize()
+                .map_err(|e| CliError::Runtime(format!("解析路径 {} 失败：{e}", base.display())))?;
+            tail.iter().rev().fold(resolved, |acc, part| acc.join(part))
+        }
+    };
+    let temp = std::env::temp_dir()
+        .canonicalize()
+        .unwrap_or_else(|_| std::env::temp_dir());
+    if !canonical.starts_with(&cwd) && !canonical.starts_with(&temp) {
+        return Err(CliError::Runtime(format!(
+            "账本路径 {} 在当前工作目录 {} 与临时目录之外——trit 只操作本仓账本",
+            canonical.display(),
+            cwd.display()
+        )));
+    }
+    Ok(canonical)
+}
+
 fn open_ledger(args: &[String]) -> Result<(Journal, PathBuf), CliError> {
     let (path, _) = split_ledger(args);
+    let path = fence_ledger_path(&path)?;
     let j = Journal::open_as(&path, 0)
         .map_err(|e| CliError::Runtime(format!("打开账本 {} 失败：{e}", path.display())))?;
     Ok((j, path))
@@ -112,7 +168,7 @@ fn cmd_init(args: &[String]) -> Result<(), CliError> {
         .first()
         .ok_or_else(|| CliError::Usage("init 需要 <dir>".into()))?;
     let title = args.get(1).cloned().unwrap_or_else(|| "main".into());
-    let path = PathBuf::from(dir).join(DEFAULT_LEDGER);
+    let path = fence_ledger_path(&PathBuf::from(dir).join(DEFAULT_LEDGER))?;
     if path.exists() {
         return Err(CliError::Runtime(format!("{} 已存在", path.display())));
     }
@@ -152,6 +208,7 @@ fn cmd_log(args: &[String]) -> Result<(), CliError> {
             _ => i += 1,
         }
     }
+    let path = fence_ledger_path(&path)?;
     let text = std::fs::read_to_string(&path)
         .map_err(|e| CliError::Runtime(format!("读账本失败：{e}")))?;
     let mut shown = 0usize;
@@ -272,7 +329,7 @@ fn cmd_merge(args: &[String]) -> Result<(), CliError> {
         .split_first()
         .ok_or_else(|| CliError::Usage("merge 需要 <other 账本>".into()))?;
     let (mut local, path) = open_ledger(rest)?;
-    let other_path = PathBuf::from(other);
+    let other_path = fence_ledger_path(&PathBuf::from(other))?;
     if !other_path.is_file() {
         return Err(CliError::Runtime(format!(
             "{} 不是文件",
@@ -359,8 +416,14 @@ fn cmd_clone(args: &[String]) -> Result<(), CliError> {
         .split_first()
         .and_then(|(s, r)| r.first().map(|d| (s, d)))
         .ok_or_else(|| CliError::Usage("clone 需要 <src> <dst>".into()))?;
-    std::fs::copy(src, dst).map_err(|e| CliError::Runtime(format!("克隆失败：{e}")))?;
-    println!("克隆 {src} → {dst}（含全部历史，追加式日志天然完整）");
+    let src = fence_ledger_path(std::path::Path::new(src))?;
+    let dst = fence_ledger_path(std::path::Path::new(dst))?;
+    std::fs::copy(&src, &dst).map_err(|e| CliError::Runtime(format!("克隆失败：{e}")))?;
+    println!(
+        "克隆 {} → {}（含全部历史，追加式日志天然完整）",
+        src.display(),
+        dst.display()
+    );
     Ok(())
 }
 
@@ -432,18 +495,20 @@ fn cmd_sync_git(args: &[String]) -> Result<(), CliError> {
     Ok(())
 }
 
-/// `trit lock <Cargo.lock> [-f file] [--build X]`：**依赖坐标入账**。
+/// `trit lock <Cargo.lock> [-f file] [--build-from <feature 清单文件>]`：**依赖坐标入账**。
 ///
 /// 把本项目锁文件里实际解析到的每个依赖，立成账本中的坐标节点（**0 态**——
 /// 外部事实入账，未验证不算安全），并连一条"消费 → 本仓根"的边，让库被打穿时
-/// 本仓的门禁与有效裁决直接看见。`--build` 给 feature/构建参数指纹
-/// （`Cargo.lock` 不记 feature 集，不传就只锁到 checksum 这一层）。
+/// 本仓的门禁与有效裁决直接看见。`Cargo.lock` 不记 feature 集；要把同 checksum
+/// 不同 feature 的产物分开，用 `--build-from` 指向一个 feature 清单文件
+/// （内容为逗号/空格分隔的 feature 名，做指纹）。**不收命令行自由文本**：
+/// 指纹会写进账本行，字符集在文件读入后同样校验，其余一律拒绝。
 /// 幂等：同坐标再跑不重复建节点。
 fn cmd_lock(args: &[String]) -> Result<(), CliError> {
     // 参数惯例与 merge / sync-git 一致：位置参数在前、`-f` 在后也要认。
     // 只走 split_ledger（认首位 `-f`）会把账本静默换成默认名——坐标写进别的文件。
     let mut path = PathBuf::from(DEFAULT_LEDGER);
-    let mut build: Option<String> = None;
+    let mut build_from: Option<String> = None;
     let mut lock_arg: Option<String> = None;
     let mut i = 0usize;
     while i < args.len() {
@@ -455,14 +520,22 @@ fn cmd_lock(args: &[String]) -> Result<(), CliError> {
                 path = PathBuf::from(v);
                 i += 2;
             }
-            "--build" => {
+            "--build-from" => {
                 let v = args
                     .get(i + 1)
-                    .ok_or_else(|| CliError::Usage("--build 需要跟一个值".into()))?;
-                build = Some(v.clone());
+                    .ok_or_else(|| CliError::Usage("--build-from 需要跟一个文件".into()))?;
+                build_from = Some(v.clone());
                 i += 2;
             }
-            other if other.starts_with('-') => i += 1,
+            // 未知参数一律判红，不静默跳过：`--build` 改名成 `--build-from` 之后，
+            // 老写法 `lock Cargo.lock --build std` 会被旧逻辑当成「不认识的旗标跳过、
+            // 值当位置参数吞掉」⇒ 指纹悄悄丢失，坐标只锁到 checksum 这一层，
+            // 而调用方以为自己要的 feature 区分生效了。
+            other if other.starts_with('-') => {
+                return Err(CliError::Usage(format!(
+                    "lock 不认识参数 {other}（`--build <自由文本>` 已改为 `--build-from <feature 清单文件>`）"
+                )));
+            }
             other => {
                 if lock_arg.is_none() {
                     lock_arg = Some(other.to_string());
@@ -472,9 +545,37 @@ fn cmd_lock(args: &[String]) -> Result<(), CliError> {
         }
     }
     let lock_arg = lock_arg.ok_or_else(|| CliError::Usage("lock 需要 <Cargo.lock>".into()))?;
+    let lock_arg = fence_ledger_path(std::path::Path::new(&lock_arg))?;
     let text = std::fs::read_to_string(&lock_arg)
-        .map_err(|e| CliError::Runtime(format!("读 {lock_arg} 失败：{e}")))?;
+        .map_err(|e| CliError::Runtime(format!("读 {} 失败：{e}", lock_arg.display())))?;
     let pins = supply::parse_lock(&text);
+    let build = match build_from {
+        Some(file) => {
+            let file = fence_ledger_path(std::path::Path::new(&file))?;
+            let raw = std::fs::read_to_string(&file)
+                .map_err(|e| CliError::Runtime(format!("读 {} 失败：{e}", file.display())))?;
+            // 指纹写进账本行（文件内容）：逗号/空白分隔的 feature 名，
+            // 只放行 feature 名字符，其余一律拒绝——自由文本不进账本。
+            let fingerprint = raw
+                .split(|c: char| c == ',' || c.is_whitespace())
+                .map(str::trim)
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>()
+                .join(",");
+            if fingerprint.is_empty()
+                || !fingerprint
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | ',' | '.' | '+'))
+            {
+                return Err(CliError::Usage(format!(
+                    "--build-from 的 feature 清单只接受 feature 名字符（字母数字 _ - . +，逗号分隔），收到：{fingerprint}"
+                )));
+            }
+            Some(fingerprint)
+        }
+        None => None,
+    };
+    let path = fence_ledger_path(&path)?;
     let mut j = Journal::open_as(&path, 0)
         .map_err(|e| CliError::Runtime(format!("打开账本 {} 失败：{e}", path.display())))?;
     let report = coords::attach_pins(&mut j, &pins, build.as_deref())
@@ -510,7 +611,7 @@ fn help_text() -> String {
   suspects [-f file]        0 态待办队列
   sync-git <repo> [-f file] [--open]
                             git 共存桥：提交历史吸收进账本（0 态+默认隔离）
-  lock <Cargo.lock> [-f file] [--build X]
+  lock <Cargo.lock> [-f file] [--build-from <feature 清单文件>]
                             依赖坐标入账：本项目实际解析到哪个库产物（幂等）
   help                      本帮助
 
@@ -532,6 +633,41 @@ mod tests {
 
     fn s(v: impl Into<String>) -> String {
         v.into()
+    }
+
+    #[test]
+    fn fence_confines_ledger_paths_to_cwd_and_temp() {
+        // cwd 内的相对路径放行（解析为 cwd 下的规范形）。
+        let inside = fence_ledger_path(std::path::Path::new("fence-check.tritj")).unwrap();
+        let cwd = std::env::current_dir().unwrap().canonicalize().unwrap();
+        assert!(inside.starts_with(&cwd), "{inside:?} 应在 cwd {cwd:?} 内");
+        // 临时目录白名单放行（测试与一次性账本的显式豁免）。
+        let temp_file = tmpdir("fence-temp").join("ledger.tritj");
+        assert!(fence_ledger_path(&temp_file).is_ok());
+        // `..` 逃出 cwd 被拒。
+        let escape = fence_ledger_path(std::path::Path::new("../fence-escape.tritj"));
+        assert!(matches!(escape, Err(CliError::Runtime(_))), "{escape:?}");
+        // cwd 之外的绝对路径被拒（用 cwd 的兄弟目录构造一个稳定反例）。
+        let sibling = cwd
+            .parent()
+            .map(|p| p.join("definitely-outside-fence.tritj"))
+            .unwrap_or_else(|| std::path::PathBuf::from("Z:\\definitely-outside.tritj"));
+        assert!(matches!(
+            fence_ledger_path(&sibling),
+            Err(CliError::Runtime(_))
+        ));
+    }
+
+    #[test]
+    fn run_refuses_ledger_paths_outside_fence() {
+        // CLI 层面：-f 指到 cwd/temp 之外 ⇒ Runtime 错误，而不是去改那个文件。
+        let outside = std::env::current_dir()
+            .unwrap()
+            .parent()
+            .map(|p| p.join("outside-fence.tritj"))
+            .unwrap_or_else(|| std::path::PathBuf::from("Z:\\outside.tritj"));
+        let outcome = run(&[s("log"), s("-f"), s(outside.to_string_lossy().to_string())]);
+        assert!(matches!(outcome, Err(CliError::Runtime(_))), "{outcome:?}");
     }
 
     #[test]
@@ -712,6 +848,108 @@ mod tests {
             titles.len(),
             1,
             "坐标节点必须落在 -f 指定的账本里：{titles:?}"
+        );
+        drop(j.into_dag().unwrap());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn lock_rejects_unknown_flags_instead_of_dropping_the_fingerprint() {
+        // 旧口径 `--build <自由文本>` 已废。老解析循环是「不认识的旗标跳过、它的值当位置参数」
+        // ⇒ 传了 `--build serde,derive` 会被静默丢弃，坐标只锁到 checksum 这一层，
+        // 而调用方以为自己要的 feature 区分生效了。这比报错糟，必须判红。
+        let dir = tmpdir("lock-unknown-flag");
+        run(&[s("init"), s(dir.to_string_lossy().to_string())]).unwrap();
+        let lockfile = dir.join("Cargo.lock");
+        fs::write(
+            &lockfile,
+            "[[package]]\nname = \"shared-lib\"\nversion = \"1.2.0\"\nchecksum = \"aaa\"\n",
+        )
+        .unwrap();
+        let outcome = run(&[
+            s("lock"),
+            s(lockfile.to_string_lossy().to_string()),
+            s("-f"),
+            s(dir.join(DEFAULT_LEDGER).to_string_lossy().to_string()),
+            s("--build"),
+            s("serde,derive"),
+        ]);
+        assert!(matches!(outcome, Err(CliError::Usage(_))), "{outcome:?}");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn lock_refuses_non_feature_characters_before_writing_the_ledger() {
+        // 指纹是写进账本行的文件内容：字符集外的东西（这里放一个 '#'）一律拒，
+        // 且必须**在落账之前**拒——判红之后账本一个字节都不许多。
+        let dir = tmpdir("lock-bad-build-from");
+        run(&[s("init"), s(dir.to_string_lossy().to_string())]).unwrap();
+        let lockfile = dir.join("Cargo.lock");
+        fs::write(
+            &lockfile,
+            "[[package]]\nname = \"shared-lib\"\nversion = \"1.2.0\"\nchecksum = \"aaa\"\n",
+        )
+        .unwrap();
+        let list = dir.join("features.txt");
+        fs::write(&list, "serde,#evil\n").unwrap();
+        let ledger = dir.join(DEFAULT_LEDGER);
+        let before = fs::read_to_string(&ledger).unwrap_or_default();
+        let outcome = run(&[
+            s("lock"),
+            s(lockfile.to_string_lossy().to_string()),
+            s("-f"),
+            s(ledger.to_string_lossy().to_string()),
+            s("--build-from"),
+            s(list.to_string_lossy().to_string()),
+        ]);
+        assert!(matches!(outcome, Err(CliError::Usage(_))), "{outcome:?}");
+        assert_eq!(
+            fs::read_to_string(&ledger).unwrap_or_default(),
+            before,
+            "判红不该留下半条账本"
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn lock_takes_the_build_fingerprint_from_a_feature_list_file() {
+        // 合法清单：逗号/空白混合分隔 ⇒ 规范成 `serde,derive,std` 并进了坐标行。
+        let dir = tmpdir("lock-build-from-ok");
+        run(&[s("init"), s(dir.to_string_lossy().to_string())]).unwrap();
+        let lockfile = dir.join("Cargo.lock");
+        fs::write(
+            &lockfile,
+            "[[package]]\nname = \"shared-lib\"\nversion = \"1.2.0\"\nchecksum = \"aaa\"\n",
+        )
+        .unwrap();
+        let list = dir.join("features.txt");
+        fs::write(&list, "serde, derive\nstd\n").unwrap();
+        let ledger = dir.join(DEFAULT_LEDGER);
+        run(&[
+            s("lock"),
+            s(lockfile.to_string_lossy().to_string()),
+            s("-f"),
+            s(ledger.to_string_lossy().to_string()),
+            s("--build-from"),
+            s(list.to_string_lossy().to_string()),
+        ])
+        .expect("合法 feature 清单应入账");
+        let j = Journal::open_as(&ledger, 0).unwrap();
+        let titles: Vec<String> = j
+            .dag()
+            .nodes()
+            .iter()
+            .filter(|n| n.title.starts_with("COORD "))
+            .map(|n| n.title.clone())
+            .collect();
+        assert_eq!(
+            titles.len(),
+            1,
+            "坐标节点必须落在 -f 指定的账本里：{titles:?}"
+        );
+        assert!(
+            titles[0].contains("serde,derive,std"),
+            "指纹没进坐标行，实际标题：{titles:?}"
         );
         drop(j.into_dag().unwrap());
         fs::remove_dir_all(&dir).unwrap();
