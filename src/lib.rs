@@ -43,11 +43,11 @@
 //! （delta/journal/hlc/snapshot/migrate）+ 裁决（trit/dag/verdict/sandbox/
 //! propagate/policy/cull）+ 同步（sync/transport）+ 计算与验证
 //! （bitparallel/auth/kani_proofs）+ 生产线（lifecycle/scheduler/design/
-//! vocab）+ 裁决源与出口（scan/diag/json/net/supply/vex/attest）。
+//! vocab/catalog）+ 裁决源与出口（scan/diag/json/net/supply/vex/attest）。
 //! **工具层**（`full` feature，默认开启）：recovery/import/template/server/
-//! daemon/lsp/taskmd/intake/fleet/coords/coords_fleet/harvest/adoption——人体工程与集成面，
-//! 跨仓运维域（六态落地以 Fleet 为数据源），是本工具专属，**不随上游收录**。
-//! 收录规则全文见 `docs/UPSTREAM.md`。
+//! daemon/lsp/taskmd/intake/fleet/coords/coords_fleet/harvest/adoption/retbridge
+//! ——人体工程与集成面，跨仓运维域（六态落地以 Fleet 为数据源），
+//! 是本工具专属，**不随上游收录**。收录规则全文见 `docs/UPSTREAM.md`。
 
 #[cfg(feature = "full")]
 pub mod adoption;
@@ -56,6 +56,7 @@ pub mod attack;
 pub mod attest;
 pub mod auth;
 pub mod bitparallel;
+pub mod catalog;
 pub mod compat;
 #[cfg(feature = "full")]
 pub mod coords;
@@ -92,6 +93,8 @@ pub mod policy;
 pub mod propagate;
 #[cfg(feature = "full")]
 pub mod recovery;
+#[cfg(feature = "full")]
+pub mod retbridge;
 pub mod sandbox;
 pub mod scan;
 pub mod scheduler;
@@ -114,9 +117,14 @@ pub mod vocab;
 
 #[cfg(feature = "full")]
 pub use adoption::{Adoption, AdoptionState, Blast, ChangePackage, Impact, Receiver};
-pub use attest::{attest, verify, PREDICATE_TYPE, STATEMENT_TYPE};
+pub use attest::{attest, attest_with_catalog, verify, PREDICATE_TYPE, STATEMENT_TYPE};
 pub use auth::{ct_eq, hmac_sha256, sha256};
 pub use bitparallel::{tri_pack, tri_unpack, PackError, TriWord};
+// catalog 的 `Tier` 与 design::Tier 撞名，不入根导出——走 `catalog::Tier` 模块路径
+pub use catalog::{
+    catalog, export_map_tsv, family_tasks, signature, Catalog, CatalogEntry, CatalogStats,
+    Correction, CorrectionKind, Family,
+};
 #[cfg(feature = "full")]
 pub use coords::{attach_lock, declare_provider, CoordDecl, CoordGap, CoordKey, GapReason, Role};
 pub use cull::{cull, CullAction, CullRules};
@@ -135,7 +143,10 @@ pub use diag::{
     Diagnostic, Severity,
 };
 #[cfg(feature = "full")]
-pub use fleet::{AttackChain, AttackChains, ChainStep, ChainVia, CrossRepoDelta, Fleet, FleetRow};
+pub use fleet::{
+    family_tasks_fleet, is_imported, AttackChain, AttackChains, ChainStep, ChainVia,
+    CrossRepoDelta, Fleet, FleetRow, FleetTask,
+};
 #[cfg(feature = "full")]
 pub use harvest::{harvest, HarvestReport, Registry};
 pub use hlc::{Clock, Hlc};
@@ -156,6 +167,8 @@ pub use policy::{decide, next_layer, Action, Channel, Decision, MergePolicy, PrS
 pub use propagate::Contagion;
 #[cfg(feature = "full")]
 pub use recovery::{BackupVault, Inventory, Retention, SnapshotInfo};
+#[cfg(feature = "full")]
+pub use retbridge::{intake_triage, TriageIntakeReport};
 pub use sandbox::{FuzzReport, Sandbox};
 pub use scan::{run_scan, Evidence, Finding, NodeFold, Rule, ScanReport};
 pub use scheduler::{drain_plan, Handler, JournalHandler, Scheduler, Task, WorkReport};
@@ -173,5 +186,5 @@ pub use template::{audit_discipline, scaffold, Discipline, DisciplineViolation, 
 pub use transport::{pull_merge_via, MemoryTransport, TcpTransport, Transport};
 pub use trit::Trit;
 pub use verdict::{merge_gate, AttackVector, ExploitEvidence, GateDecision};
-pub use vex::{export_vex, VexStatus, OPENVEX_CONTEXT};
+pub use vex::{export_vex, export_vex_tiered, VexStatus, OPENVEX_CONTEXT};
 pub use vocab::{Absorption, Concept, Registration, Vocabulary};

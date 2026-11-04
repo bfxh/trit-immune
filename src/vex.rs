@@ -14,8 +14,14 @@
 //! `fixed` 是**账本派生**的：只有 journal 里有"曾 `-1`"的证据才许声明
 //! fixed——这与"作者打勾 ≠ +1"同一条纪律，VEX 文档不许比账本更乐观。
 //!
-//! 输出为 OpenVEX v0.2.0 JSON 文本（[`export_vex`]）；手写序列化、
-//! 字符串转义复用 [`crate::json::json_escape`]（零依赖）。
+//! **分层发布**（[`export_vex_tiered`]）：对外最强主张（`affected`）只给
+//! 机器可查证据——带利用证据回链（已复现）的 `-1` 才发 `affected`；纯声称
+//! 的 `-1`（openai/math 的 "unformalized could have issues"）对外降级为
+//! `under_investigation`——VEX 文档不许比证据更乐观，与 fixed 的账本派生
+//! 同一条纪律的对外面。
+//!
+//! 输出为 OpenVEX v0.2.0 JSON 文本（[`export_vex`] / [`export_vex_tiered`]）；
+//! 手写序列化、字符串转义复用 [`crate::json::json_escape`]（零依赖）。
 
 use crate::dag::ImmuneDag;
 use crate::json::json_escape;
@@ -50,6 +56,20 @@ impl VexStatus {
             Self::UnderInvestigation => "under_investigation",
             Self::NotAffected => "not_affected",
             Self::Fixed => "fixed",
+        }
+    }
+
+    /// **分层发布映射**（[`export_vex_tiered`] 用）：`-1` 按 [`crate::catalog::Tier`]
+    /// 分级——已复现（证据回链）发 `affected`；纯声称降级 `under_investigation`。
+    /// `+1`/`0` 与 [`Self::from_verdict`] 一致（层级是坏消息的证据质量口径，
+    /// 不改变好消息与未决的映射）。
+    pub fn from_tier(verdict: Trit, was_ever_vulnerable: bool, tier: crate::catalog::Tier) -> Self {
+        match verdict {
+            Trit::Vulnerable if tier == crate::catalog::Tier::Reproduced => Self::Affected,
+            Trit::Vulnerable => Self::UnderInvestigation,
+            Trit::Unknown => Self::UnderInvestigation,
+            Trit::Hardened if was_ever_vulnerable => Self::Fixed,
+            Trit::Hardened => Self::NotAffected,
         }
     }
 }
@@ -90,6 +110,37 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 /// （证据随声明走）。根节点（标题无关漏洞）跳过——调用方把根当库名，
 /// 不是漏洞面。
 pub fn export_vex(dag: &ImmuneDag, author: &str, product: &str) -> String {
+    build_vex(dag, author, product, &|n| {
+        let was_vuln = n.history.iter().any(|e| e.verdict == Trit::Vulnerable);
+        VexStatus::from_verdict(n.verdict, was_vuln)
+    })
+}
+
+/// **分层发布导出**：`-1` 按验证层级分级（[`VexStatus::from_tier`]）——
+/// 已复现发 `affected`，纯声称降级 `under_investigation`。层级来自
+/// [`crate::catalog::catalog`]（只看证据形态的机械口径）。
+pub fn export_vex_tiered(dag: &ImmuneDag, author: &str, product: &str) -> String {
+    let cat = crate::catalog::catalog(dag);
+    build_vex(dag, author, product, &|n| {
+        let was_vuln = n.history.iter().any(|e| e.verdict == Trit::Vulnerable);
+        let tier = cat
+            .entries
+            .iter()
+            .find(|e| e.node == n.id)
+            .map(|e| e.tier)
+            .unwrap_or(crate::catalog::Tier::Claimed);
+        VexStatus::from_tier(n.verdict, was_vuln, tier)
+    })
+}
+
+/// VEX JSON 构建体（[`export_vex`] 与 [`export_vex_tiered`] 共用同一序列化，
+/// 只换 status 的派生函数——两份导出不该有两种 JSON 形状）。
+fn build_vex(
+    dag: &ImmuneDag,
+    author: &str,
+    product: &str,
+    status_of: &dyn Fn(&crate::dag::Node) -> VexStatus,
+) -> String {
     let mut out = String::with_capacity(1024 + dag.nodes().len() * 160);
     out.push_str("{\n  \"@context\": ");
     out.push_str(&json_escape(OPENVEX_CONTEXT));
@@ -106,8 +157,7 @@ pub fn export_vex(dag: &ImmuneDag, author: &str, product: &str) -> String {
         if n.parent.is_none() {
             continue; // 根 = 库名，不是漏洞面
         }
-        let was_vuln = n.history.iter().any(|e| e.verdict == Trit::Vulnerable);
-        let status = VexStatus::from_verdict(n.verdict, was_vuln);
+        let status = status_of(n);
         let note = n.history.last().map(|e| e.note.as_str()).unwrap_or("");
         if !first {
             out.push(',');
@@ -167,6 +217,64 @@ mod tests {
             VexStatus::from_verdict(Trit::Hardened, false),
             VexStatus::Fixed
         );
+    }
+
+    #[test]
+    fn tiered_mapping_downgrades_claims_keeps_verified() {
+        use crate::catalog::Tier;
+        // 声称 -1（无证据）→ 对外降级 under_investigation
+        assert_eq!(
+            VexStatus::from_tier(Trit::Vulnerable, false, Tier::Claimed),
+            VexStatus::UnderInvestigation,
+            "VEX 文档不许比证据更乐观：纯声称不发 affected"
+        );
+        // 已复现 -1（证据回链）→ affected（最强主张只给机器可查证据）
+        assert_eq!(
+            VexStatus::from_tier(Trit::Vulnerable, false, Tier::Reproduced),
+            VexStatus::Affected
+        );
+        // 好消息与未决的映射不受层级影响
+        assert_eq!(
+            VexStatus::from_tier(Trit::Hardened, true, Tier::Claimed),
+            VexStatus::Fixed
+        );
+        assert_eq!(
+            VexStatus::from_tier(Trit::Unknown, false, Tier::Reproduced),
+            VexStatus::UnderInvestigation
+        );
+    }
+
+    #[test]
+    fn tiered_export_publishes_only_reproduced_as_affected() {
+        use crate::verdict::ExploitEvidence;
+        let mut dag = ImmuneDag::root("lib");
+        let claimed = dag.spawn(NodeId(0), NodeKind::Delta, "声称的");
+        dag.record(claimed, Trit::Vulnerable, None, "扫描器判坏");
+        let reproduced = dag.spawn(NodeId(0), NodeKind::Delta, "复现的");
+        dag.record(
+            reproduced,
+            Trit::Vulnerable,
+            Some(ExploitEvidence {
+                target: reproduced,
+                vector: crate::verdict::AttackVector::Xss,
+                round: 1,
+                payload: "poc".into(),
+            }),
+            "复现回链",
+        );
+        let fixed = dag.spawn(NodeId(0), NodeKind::Delta, "修好的");
+        dag.record(fixed, Trit::Vulnerable, None, "打穿");
+        dag.record(fixed, Trit::Hardened, None, "回归通过");
+
+        let tiered = export_vex_tiered(&dag, "rt", "lib");
+        let count = |s: &str| tiered.matches(&format!("\"{s}\"")).count();
+        assert_eq!(count("affected"), 1, "只有已复现的发 affected：{tiered}");
+        assert_eq!(count("under_investigation"), 1, "声称降级：{tiered}");
+        assert_eq!(count("fixed"), 1, "fixed 账本派生不受分层影响：{tiered}");
+
+        // 对照：未分层导出保持旧映射（-1 一律 affected）——行为不静默漂移
+        let plain = export_vex(&dag, "rt", "lib");
+        assert_eq!(plain.matches("\"affected\"").count(), 2, "旧映射不变");
     }
 
     #[test]

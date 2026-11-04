@@ -101,6 +101,12 @@ def restore_backup() -> bool:
 
 
 def link(target: pathlib.Path) -> int:
+    target = target.resolve()
+    # 包含校验：目标必须落在当前工作区内——CLI 路径参数不逃逸出本仓
+    # （路径形状的闸门：逃逸路径在污点引擎眼里就是穿越入口）。
+    if not target.is_relative_to(pathlib.Path.cwd().resolve()):
+        print(f"拒绝：--to 必须落在当前工作区内（防路径逃逸）：{target}")
+        return 2
     if not (target / "crates" / DEP / "Cargo.toml").is_file():
         print(f"目标里找不到 crates/{DEP}/Cargo.toml：{target}")
         return 2
