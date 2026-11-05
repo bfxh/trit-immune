@@ -668,7 +668,21 @@ fn lock_from(args: &[String], lock_text: &str) -> Result<(), CliError> {
                 );
                 i += 2;
             }
-            _ => i += 1,
+            // 未知参数一律判红，不静默跳过（#7 的纪律）：老写法
+            // `lock Cargo.lock --build std` 若被静默跳过、值当位置参数吞掉，
+            // 指纹会悄悄丢失，坐标只锁到 checksum 这一层，而调用方以为
+            // 自己要的 feature 区分生效了。stdin 口径下位置参数同样不收——
+            // Cargo.lock 只从 stdin 来。
+            other if other.starts_with('-') => {
+                return Err(CliError::Usage(format!(
+                    "lock 不认识参数 {other}（旧口径 `lock <Cargo.lock> [--build-from <文件>]` 已改为 stdin：Cargo.lock 从标准输入读入，feature 清单用 --build <逗号分隔>）"
+                )));
+            }
+            other => {
+                return Err(CliError::Usage(format!(
+                    "lock 不接受位置参数 {other:?}（旧口径 `lock <Cargo.lock> [--build-from <文件>]` 已改为 stdin：Cargo.lock 从标准输入读入，feature 清单用 --build <逗号分隔>，例如 `cargo generate-lockfile | trit lock`）"
+                )));
+            }
         }
     }
     // 指纹写进账本行：逗号/空白分隔的 feature 名，只放行 feature 名字符，
@@ -948,7 +962,7 @@ mod tests {
             "[[package]]\nname = \"shared-lib\"\nversion = \"1.2.0\"\nchecksum = \"aaa\"\n";
 
         lock_from(
-            &[s("lock"), s("-f"), s(ledger.to_string_lossy().to_string())],
+            &[s("-f"), s(ledger.to_string_lossy().to_string())],
             lock_text,
         )
         .expect("lock 应接受 -f（Cargo.lock 走 stdin）");
@@ -956,7 +970,6 @@ mod tests {
         // --build 内联清单：字符集闸放行合法名，拒绝非法字符
         lock_from(
             &[
-                s("lock"),
                 s("-f"),
                 s(ledger.to_string_lossy().to_string()),
                 s("--build"),
@@ -969,7 +982,6 @@ mod tests {
             matches!(
                 lock_from(
                     &[
-                        s("lock"),
                         s("-f"),
                         s(ledger.to_string_lossy().to_string()),
                         s("--build"),
@@ -1006,4 +1018,69 @@ mod tests {
         drop(j.into_dag().unwrap());
         fs::remove_dir_all(&dir).unwrap();
     }
+
+    #[test]
+    fn lock_rejects_unknown_flags_instead_of_dropping_the_fingerprint() {
+        // 旧口径 `--build <自由文本>` 已废。老解析循环是「不认识的旗标跳过、它的值当位置参数」
+        // ⇒ 传了 `--build serde,derive` 会被静默丢弃，坐标只锁到 checksum 这一层，
+        // 而调用方以为自己要的 feature 区分生效了。这比报错糟，必须判红。
+        let dir = tmpdir("lock-unknown-flag");
+        run(&[s("init"), s(dir.to_string_lossy().to_string())]).unwrap();
+        let lockfile = dir.join("Cargo.lock");
+        fs::write(
+            &lockfile,
+            "[[package]]\nname = \"shared-lib\"\nversion = \"1.2.0\"\nchecksum = \"aaa\"\n",
+        )
+        .unwrap();
+        let outcome = run(&[
+            s("lock"),
+            s(lockfile.to_string_lossy().to_string()),
+            s("-f"),
+            s(dir.join(DEFAULT_LEDGER).to_string_lossy().to_string()),
+            s("--build"),
+            s("serde,derive"),
+        ]);
+        // 判红本身不够——还必须是**能照着改**的判红：错误里要点名是哪一枚旗标，
+        // 并给出新旧口径的对应关系。否则「随便回一句 unknown」也能过这条断言，
+        // 而用户照样不知道自己把哪个参数写废了。
+        let err = match outcome {
+            Err(CliError::Usage(message)) => message,
+            other => panic!("未知旗标必须 Usage 判红，实际：{other:?}"),
+        };
+        assert!(err.contains("--build"), "错误没点名是哪一枚旗标：{err}");
+        assert!(
+            err.contains("--build-from"),
+            "错误没给新旧口径的对应关系，用户无法照做：{err}"
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn lock_refuses_non_feature_characters_before_writing_the_ledger() {
+        // 指纹是写进账本行的内容：字符集外的东西（这里放一个 '#'）一律拒，
+        // 且必须**在落账之前**拒——判红之后账本一个字节都不许多。
+        let dir = tmpdir("lock-bad-build");
+        run(&[s("init"), s(dir.to_string_lossy().to_string())]).unwrap();
+        let ledger = dir.join(DEFAULT_LEDGER);
+        let before = fs::read_to_string(&ledger).unwrap_or_default();
+        let outcome = run(&[
+            s("lock"),
+            s("-f"),
+            s(ledger.to_string_lossy().to_string()),
+            s("--build"),
+            s("serde,#evil"),
+        ]);
+        assert!(matches!(outcome, Err(CliError::Usage(_))), "{outcome:?}");
+        assert_eq!(
+            fs::read_to_string(&ledger).unwrap_or_default(),
+            before,
+            "判红不该留下半条账本"
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // 旧口径 `--build-from <feature 清单文件>` 的测试已随 stdin 重设计移除：
+    // feature 清单走 `--build <逗号分隔>` 内联（字符集闸不变，
+    // 逗号/空白混合分隔的规范化行为由 lock_reads_cargo_lock_from_stdin 覆盖），
+    // 外部文件路径参数不再存在——path-traversal 面从入口消失。
 }
