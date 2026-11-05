@@ -1,0 +1,49 @@
+{
+  "schemaVersion": "mimosa-finding-ledger-batch/v1",
+  "batchId": "stop-20261031T063215086Z-26900-7169807aeb59",
+  "runId": "20261031T063215086Z-26900-7169807aeb59",
+  "runStatus": "completed",
+  "coverage": {
+    "status": "complete",
+    "reasons": []
+  },
+  "source": {
+    "component": "zcode-hook",
+    "operationId": "Stop"
+  },
+  "revision": "785689c39db33fd7e5e453f0d78e687f3db9481b",
+  "diffHash": "1b94eefc3d8cc55962dc213f177838ca805ddebea3e9d21ab17c493ebe6c893b",
+  "rulesVersion": "unavailable",
+  "sessionHash": "ac101c5b43d84ae51c13350652902589991b79eeeaa80580a31527acfb18555a",
+  "reportRef": ".mimosa/reports/task-review-sess_32eb5f35-aeba-4fc8-baeb-0bbb28a7e599-20261031T063215086Z-26900-7169807aeb59.json",
+  "events": [],
+  "observedFindingIds": [],
+  "verifiedFiles": [
+    {
+      "file": "tests/properties.rs",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "src/supply.rs",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "src/lib.rs",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "tests/supply.rs",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "src/intake.rs",
+      "direct": "complete",
+      "projectContext": "partial"
+    }
+  ],
+  "recordedAt": "2026-10-31T06:32:15.395Z"
+}

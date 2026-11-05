@@ -18,10 +18,13 @@
 //!
 //! 默认账本：当前目录 `repo.tritj`（`-f` 可指定）。
 
+use std::io;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use trit_immune::{coords, delta, parse_stamped_line, supply, Journal, NodeId, NodeKind, Trit};
+use trit_immune::{
+    coords, delta, parse_stamped_line, retbridge, supply, Journal, NodeId, NodeKind, Trit,
+};
 
 const DEFAULT_LEDGER: &str = "repo.tritj";
 
@@ -76,6 +79,8 @@ fn run(args: &[String]) -> Result<(), CliError> {
         "clone" => cmd_clone(rest),
         "gate" => cmd_gate(rest),
         "suspects" => cmd_suspects(rest),
+        "catalog" => cmd_catalog(rest),
+        "triage-bridge" => cmd_triage_bridge(rest),
         "sync-git" => cmd_sync_git(rest),
         "lock" => cmd_lock(rest),
         "help" | "--help" | "-h" => {
@@ -97,8 +102,64 @@ fn split_ledger(args: &[String]) -> (PathBuf, &[String]) {
     }
 }
 
+/// **账本路径围栏**：解析后的路径必须落在当前工作目录或系统临时目录之内。
+///
+/// trit 是 git 风格的本地 CLI：账本属于「你当前所在的仓」。CLI 参数是外部
+/// 输入，直通文件读写就是一条 path-traversal 污点链——敲错路径会改掉任意
+/// 文件。围栏做两件事：`canonicalize` 消解 `..` 与符号形态，然后要求结果
+/// 以 cwd 或 temp（已 canonical 化）为前缀；两者之外一律拒绝。
+/// temp 白名单是给「一次性/测试账本」的显式豁免（那是用户自己的临时目录，
+/// 风险面 = 用户自己的文件），常态使用全部收在 cwd 内。
+fn fence_ledger_path(raw: &std::path::Path) -> Result<PathBuf, CliError> {
+    let cwd = std::env::current_dir()
+        .map_err(|e| CliError::Runtime(format!("取当前目录失败：{e}")))?
+        .canonicalize()
+        .map_err(|e| CliError::Runtime(format!("解析当前目录失败：{e}")))?;
+    let candidate = if raw.is_absolute() {
+        raw.to_path_buf()
+    } else {
+        cwd.join(raw)
+    };
+    let canonical = match candidate.canonicalize() {
+        Ok(p) => p,
+        Err(_) => {
+            // 文件（或中间目录）尚不存在（init 允许一次建多层）：向上找最近的
+            // 真实存在祖先做 canonicalize——`..` 组分在这一步被消解——再把
+            // 中间不存在的组件原样拼回去。拼回去的部分不再含 `..`：含 `..`
+            // 的路径段必经祖先 canonicalize，逃逸由最后的 starts_with 拦。
+            let mut base = candidate.clone();
+            let mut tail: Vec<std::ffi::OsString> = Vec::new();
+            while !(base.is_dir() || base.is_file()) {
+                match (base.parent(), base.file_name()) {
+                    (Some(parent), Some(name)) => {
+                        tail.push(name.to_os_string());
+                        base = parent.to_path_buf();
+                    }
+                    _ => break,
+                }
+            }
+            let resolved = base
+                .canonicalize()
+                .map_err(|e| CliError::Runtime(format!("解析路径 {} 失败：{e}", base.display())))?;
+            tail.iter().rev().fold(resolved, |acc, part| acc.join(part))
+        }
+    };
+    let temp = std::env::temp_dir()
+        .canonicalize()
+        .unwrap_or_else(|_| std::env::temp_dir());
+    if !canonical.starts_with(&cwd) && !canonical.starts_with(&temp) {
+        return Err(CliError::Runtime(format!(
+            "账本路径 {} 在当前工作目录 {} 与临时目录之外——trit 只操作本仓账本",
+            canonical.display(),
+            cwd.display()
+        )));
+    }
+    Ok(canonical)
+}
+
 fn open_ledger(args: &[String]) -> Result<(Journal, PathBuf), CliError> {
     let (path, _) = split_ledger(args);
+    let path = fence_ledger_path(&path)?;
     let j = Journal::open_as(&path, 0)
         .map_err(|e| CliError::Runtime(format!("打开账本 {} 失败：{e}", path.display())))?;
     Ok((j, path))
@@ -112,9 +173,16 @@ fn cmd_init(args: &[String]) -> Result<(), CliError> {
         .first()
         .ok_or_else(|| CliError::Usage("init 需要 <dir>".into()))?;
     let title = args.get(1).cloned().unwrap_or_else(|| "main".into());
-    let path = PathBuf::from(dir).join(DEFAULT_LEDGER);
+    let path = fence_ledger_path(&PathBuf::from(dir).join(DEFAULT_LEDGER))?;
     if path.exists() {
         return Err(CliError::Runtime(format!("{} 已存在", path.display())));
+    }
+    // `trit init ./new-repo` 应当像 git init 一样把目录一起建出来：
+    // 少这一步时 Journal::create 只会抛 os error 3（路径不存在），用户看不出是 init 的锅。
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            CliError::Runtime(format!("创建账本目录 {} 失败：{e}", parent.display()))
+        })?;
     }
     Journal::create_as(&path, &title, 0)?;
     println!("初始化账本 {}（根：{title}）", path.display());
@@ -145,6 +213,7 @@ fn cmd_log(args: &[String]) -> Result<(), CliError> {
             _ => i += 1,
         }
     }
+    let path = fence_ledger_path(&path)?;
     let text = std::fs::read_to_string(&path)
         .map_err(|e| CliError::Runtime(format!("读账本失败：{e}")))?;
     let mut shown = 0usize;
@@ -265,7 +334,7 @@ fn cmd_merge(args: &[String]) -> Result<(), CliError> {
         .split_first()
         .ok_or_else(|| CliError::Usage("merge 需要 <other 账本>".into()))?;
     let (mut local, path) = open_ledger(rest)?;
-    let other_path = PathBuf::from(other);
+    let other_path = fence_ledger_path(&PathBuf::from(other))?;
     if !other_path.is_file() {
         return Err(CliError::Runtime(format!(
             "{} 不是文件",
@@ -352,8 +421,14 @@ fn cmd_clone(args: &[String]) -> Result<(), CliError> {
         .split_first()
         .and_then(|(s, r)| r.first().map(|d| (s, d)))
         .ok_or_else(|| CliError::Usage("clone 需要 <src> <dst>".into()))?;
-    std::fs::copy(src, dst).map_err(|e| CliError::Runtime(format!("克隆失败：{e}")))?;
-    println!("克隆 {src} → {dst}（含全部历史，追加式日志天然完整）");
+    let src = fence_ledger_path(std::path::Path::new(src))?;
+    let dst = fence_ledger_path(std::path::Path::new(dst))?;
+    std::fs::copy(&src, &dst).map_err(|e| CliError::Runtime(format!("克隆失败：{e}")))?;
+    println!(
+        "克隆 {} → {}（含全部历史，追加式日志天然完整）",
+        src.display(),
+        dst.display()
+    );
     Ok(())
 }
 
@@ -387,6 +462,133 @@ fn cmd_suspects(args: &[String]) -> Result<(), CliError> {
     for id in suspects {
         let n = dag.node(id);
         println!("  #{:02} {}", id.0, n.title);
+    }
+    Ok(())
+}
+
+/// `trit triage-bridge <JSONL> [-f file] [-n <parent>] [--no-quarantine]`：
+/// **trit-re 台账桥**（ROADMAP #51）——逆向发现吃进裁决账本。
+/// 三值对齐：true → -1、unknown → 0、false 不入账（扫描器永不 +1）；
+/// 外部输入自动隔离（`--no-quarantine` 解除）；JSONL 缺省读 stdin（`-`）。
+fn cmd_triage_bridge(args: &[String]) -> Result<(), CliError> {
+    let mut path = PathBuf::from(DEFAULT_LEDGER);
+    let mut parent: u32 = 0;
+    let mut quarantine = true;
+    let mut source: Option<String> = None;
+    let mut i = 0usize;
+    while i < args.len() {
+        match args[i].as_str() {
+            "-f" => {
+                path = PathBuf::from(
+                    args.get(i + 1)
+                        .ok_or_else(|| CliError::Usage("-f 需要跟一个文件".into()))?,
+                );
+                i += 2;
+            }
+            "-n" => {
+                parent = args
+                    .get(i + 1)
+                    .and_then(|v| v.parse().ok())
+                    .ok_or_else(|| CliError::Usage("-n 需要节点号".into()))?;
+                i += 2;
+            }
+            "--no-quarantine" => {
+                quarantine = false;
+                i += 1;
+            }
+            "-" => {
+                source = Some("-".into());
+                i += 1;
+            }
+            other if other.starts_with('-') => i += 1,
+            other => {
+                if source.is_none() {
+                    source = Some(other.to_string());
+                }
+                i += 1;
+            }
+        }
+    }
+    let source = source.unwrap_or_else(|| "-".into());
+    let jsonl = if source == "-" {
+        let mut buffer = String::new();
+        io::Read::read_to_string(&mut io::stdin(), &mut buffer)
+            .map_err(|e| CliError::Runtime(format!("读 stdin 失败：{e}")))?;
+        buffer
+    } else {
+        let file = fence_ledger_path(std::path::Path::new(&source))?;
+        std::fs::read_to_string(&file)
+            .map_err(|e| CliError::Runtime(format!("读 {} 失败：{e}", file.display())))?
+    };
+    // `-f` 本命令独立解析（位置参数在前时 open_ledger 的 split_ledger 认不到）
+    let ledger_path = fence_ledger_path(&path)?;
+    let mut j = Journal::open_as(&ledger_path, 0)
+        .map_err(|e| CliError::Runtime(format!("打开账本 {} 失败：{e}", ledger_path.display())))?;
+    let parent = NodeId(parent);
+    if parent.0 as usize >= j.dag().nodes().len() {
+        return Err(CliError::Runtime(format!("父节点 #{:02} 不存在", parent.0)));
+    }
+    let report = retbridge::intake_triage(&mut j, parent, &jsonl, quarantine)
+        .map_err(|e| CliError::Runtime(e.to_string()))?;
+    drop(j.into_dag().map_err(|e| CliError::Runtime(e.to_string()))?);
+    println!(
+        "台账桥：样本 {}，发现 {}（-1 {} / 0 {}），False 不入账 {}，坏行 {}，隔离 {} → {}",
+        report.samples,
+        report.findings,
+        report.vulnerable,
+        report.unknown,
+        report.skipped_false,
+        report.bad_lines,
+        report.quarantined,
+        ledger_path.display()
+    );
+    Ok(())
+}
+
+/// `trit catalog [-f file]`：**发现目录**——大规模产出的治理视图
+/// （openai/math 管道的账本对应物：族折叠 / 验证层级 / 修正注记）。
+/// 输出统计 + 族清单（签名序）+ 修正注记；目录是账本的纯视图，
+/// 只读不改账。
+fn cmd_catalog(args: &[String]) -> Result<(), CliError> {
+    let (j, _) = open_ledger(args)?;
+    let dag = j.dag().clone();
+    drop(j.into_dag().map_err(|e| CliError::Runtime(e.to_string()))?);
+    let cat = trit_immune::catalog(&dag);
+    let st = &cat.stats;
+    println!(
+        "发现 {} 条 / {} 族（已验证 {:.1}%：复现 {} + 已裁定 {}，纯声称 {}，矛盾 {}）",
+        st.findings,
+        st.families,
+        st.verified_ratio * 100.0,
+        st.reproduced,
+        st.adjudicated,
+        st.claimed,
+        st.contradictions
+    );
+    for f in &cat.families {
+        println!(
+            "  族「{}」{} {} 成员，代表 #{:02}：{}",
+            f.signature,
+            match f.verdict {
+                trit_immune::Trit::Vulnerable => "-1",
+                trit_immune::Trit::Unknown => "0",
+                trit_immune::Trit::Hardened => "+1",
+            },
+            f.members.len(),
+            f.representative.0,
+            dag.node(f.representative).title,
+        );
+    }
+    if !cat.corrections.is_empty() {
+        println!("修正注记（旧裁决保留在账本，永不删除）：");
+        for c in &cat.corrections {
+            let label = match c.kind {
+                trit_immune::CorrectionKind::Fixed => "已修复",
+                trit_immune::CorrectionKind::Refuted => "声明被证伪",
+                trit_immune::CorrectionKind::Contradicted => "反复修正，待人",
+            };
+            println!("  #{:02} {}：{}", c.node.0, label, dag.node(c.node).title);
+        }
     }
     Ok(())
 }
@@ -425,37 +627,76 @@ fn cmd_sync_git(args: &[String]) -> Result<(), CliError> {
     Ok(())
 }
 
-/// `trit lock <Cargo.lock> [-f file] [--build X]`：**依赖坐标入账**。
+/// `trit lock [-f file] [--build <feature,feature>]`：**依赖坐标入账**，
+/// **Cargo.lock 从 stdin 读入**（管线式 `cargo generate-lockfile | trit lock`）
+/// ——外部文件内容不经 CLI 路径参数，path-traversal 面从入口消失
+/// （ROADMAP #49 出口面的第五轮修复：引擎认不出围栏形状，就移除污点路径本身）。
 ///
 /// 把本项目锁文件里实际解析到的每个依赖，立成账本中的坐标节点（**0 态**——
 /// 外部事实入账，未验证不算安全），并连一条"消费 → 本仓根"的边，让库被打穿时
-/// 本仓的门禁与有效裁决直接看见。`--build` 给 feature/构建参数指纹
-/// （`Cargo.lock` 不记 feature 集，不传就只锁到 checksum 这一层）。
+/// 本仓的门禁与有效裁决直接看见。`Cargo.lock` 不记 feature 集；要把同 checksum
+/// 不同 feature 的产物分开，用 `--build` 内联清单（逗号分隔 feature 名）。
+/// **自由文本不进账本**：字符集闸（字母数字 `_ - . +`）+ delta 转义双消毒。
 /// 幂等：同坐标再跑不重复建节点。
 fn cmd_lock(args: &[String]) -> Result<(), CliError> {
-    let (path, rest) = split_ledger(args);
-    let lock_arg = rest
-        .first()
-        .ok_or_else(|| CliError::Usage("lock 需要 <Cargo.lock>".into()))?;
+    let mut text = String::new();
+    io::Read::read_to_string(&mut io::stdin(), &mut text)
+        .map_err(|e| CliError::Runtime(format!("读 stdin 失败：{e}")))?;
+    lock_from(args, &text)
+}
+
+/// lock 的实现体（stdin 文本由 [`cmd_lock`] 注入，测试可直接喂）。
+fn lock_from(args: &[String], lock_text: &str) -> Result<(), CliError> {
+    // 参数惯例与 merge / sync-git 一致：`-f` 在前后都要认。
+    let mut path = PathBuf::from(DEFAULT_LEDGER);
     let mut build: Option<String> = None;
-    let mut i = 1usize;
-    while i < rest.len() {
-        match rest[i].as_str() {
+    let mut i = 0usize;
+    while i < args.len() {
+        match args[i].as_str() {
+            "-f" => {
+                path = PathBuf::from(
+                    args.get(i + 1)
+                        .ok_or_else(|| CliError::Usage("-f 需要跟一个文件".into()))?,
+                );
+                i += 2;
+            }
             "--build" => {
-                build = rest.get(i + 1).cloned();
-                if build.is_none() {
-                    return Err(CliError::Usage("--build 需要跟一个值".into()));
-                }
+                build = Some(
+                    args.get(i + 1)
+                        .ok_or_else(|| CliError::Usage("--build 需要跟 feature 清单".into()))?
+                        .clone(),
+                );
                 i += 2;
             }
             _ => i += 1,
         }
     }
-    let text = std::fs::read_to_string(lock_arg)
-        .map_err(|e| CliError::Runtime(format!("读 {lock_arg} 失败：{e}")))?;
-    let pins = supply::parse_lock(&text);
+    // 指纹写进账本行：逗号/空白分隔的 feature 名，只放行 feature 名字符，
+    // 其余一律拒绝——自由文本不进账本（字符集闸 + delta 转义双消毒）。
+    let build = build
+        .map(|raw| -> Result<String, CliError> {
+            let fingerprint = raw
+                .split(|c: char| c == ',' || c.is_whitespace())
+                .map(str::trim)
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>()
+                .join(",");
+            if fingerprint.is_empty()
+                || !fingerprint
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | ',' | '.' | '+'))
+            {
+                return Err(CliError::Usage(format!(
+                    "--build 的 feature 清单只接受 feature 名字符（字母数字 _ - . +，逗号分隔），收到：{fingerprint}"
+                )));
+            }
+            Ok(fingerprint)
+        })
+        .transpose()?;
+    let path = fence_ledger_path(&path)?;
     let mut j = Journal::open_as(&path, 0)
         .map_err(|e| CliError::Runtime(format!("打开账本 {} 失败：{e}", path.display())))?;
+    let pins = supply::parse_lock(lock_text);
     let report = coords::attach_pins(&mut j, &pins, build.as_deref())
         .map_err(|e| CliError::Runtime(format!("坐标入账失败：{e}")))?;
     println!(
@@ -487,10 +728,13 @@ fn help_text() -> String {
   clone <src> <dst>         账本即工件，复制即克隆
   gate [-n node] [-f file]  三值门禁 + 打穿来源
   suspects [-f file]        0 态待办队列
+  catalog [-f file]         发现目录：族折叠 + 验证层级 + 修正注记（只读）
+  triage-bridge <JSONL|-> [-f file] [-n N] [--no-quarantine]
+                            trit-re 台账桥：逆向发现吃进裁决账本
   sync-git <repo> [-f file] [--open]
                             git 共存桥：提交历史吸收进账本（0 态+默认隔离）
-  lock <Cargo.lock> [-f file] [--build X]
-                            依赖坐标入账：本项目实际解析到哪个库产物（幂等）
+  lock [-f file] [--build <feature,feature>]
+                            依赖坐标入账（Cargo.lock 从 stdin 读，幂等）
   help                      本帮助
 
 默认账本：当前目录 repo.tritj（-f 可指定）。"
@@ -511,6 +755,60 @@ mod tests {
 
     fn s(v: impl Into<String>) -> String {
         v.into()
+    }
+
+    #[test]
+    fn fence_confines_ledger_paths_to_cwd_and_temp() {
+        // cwd 内的相对路径放行（解析为 cwd 下的规范形）。
+        let inside = fence_ledger_path(std::path::Path::new("fence-check.tritj")).unwrap();
+        let cwd = std::env::current_dir().unwrap().canonicalize().unwrap();
+        assert!(inside.starts_with(&cwd), "{inside:?} 应在 cwd {cwd:?} 内");
+        // 临时目录白名单放行（测试与一次性账本的显式豁免）。
+        let temp_file = tmpdir("fence-temp").join("ledger.tritj");
+        assert!(fence_ledger_path(&temp_file).is_ok());
+        // `..` 逃出 cwd 被拒。
+        let escape = fence_ledger_path(std::path::Path::new("../fence-escape.tritj"));
+        assert!(matches!(escape, Err(CliError::Runtime(_))), "{escape:?}");
+        // cwd 之外的绝对路径被拒（用 cwd 的兄弟目录构造一个稳定反例）。
+        let sibling = cwd
+            .parent()
+            .map(|p| p.join("definitely-outside-fence.tritj"))
+            .unwrap_or_else(|| std::path::PathBuf::from("Z:\\definitely-outside.tritj"));
+        assert!(matches!(
+            fence_ledger_path(&sibling),
+            Err(CliError::Runtime(_))
+        ));
+    }
+
+    #[test]
+    fn run_refuses_ledger_paths_outside_fence() {
+        // CLI 层面：-f 指到 cwd/temp 之外 ⇒ Runtime 错误，而不是去改那个文件。
+        let outside = std::env::current_dir()
+            .unwrap()
+            .parent()
+            .map(|p| p.join("outside-fence.tritj"))
+            .unwrap_or_else(|| std::path::PathBuf::from("Z:\\outside.tritj"));
+        let outcome = run(&[s("log"), s("-f"), s(outside.to_string_lossy().to_string())]);
+        assert!(matches!(outcome, Err(CliError::Runtime(_))), "{outcome:?}");
+    }
+
+    #[test]
+    fn init_creates_missing_directories_and_refuses_overwrite() {
+        let base = tmpdir("init-missing");
+        let target = base.join("nested").join("brand-new");
+
+        run(&[s("init"), s(target.to_string_lossy().to_string())])
+            .expect("init 应能把不存在的父目录一起建出来");
+        assert!(
+            target.join(DEFAULT_LEDGER).is_file(),
+            "init 后账本文件必须存在"
+        );
+
+        let again = run(&[s("init"), s(target.to_string_lossy().to_string())]);
+        assert!(
+            matches!(again, Err(CliError::Runtime(_))),
+            "重复 init 不该静默覆盖已有账本：{again:?}"
+        );
     }
 
     #[test]
@@ -635,6 +933,77 @@ mod tests {
         ));
         assert!(matches!(run(&[s("nope")]), Err(CliError::Usage(_))));
 
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn lock_reads_cargo_lock_from_stdin() {
+        // 新口径 `lock [-f file] [--build features]`：Cargo.lock 从 stdin 读入
+        //（path-traversal 面从入口消失）；`-f` 排在参数任意位置都必须生效，
+        // 否则坐标静默写进默认账本——同一命令行写到了另一个文件。
+        let dir = tmpdir("lock-opt");
+        run(&[s("init"), s(dir.to_string_lossy().to_string())]).unwrap();
+        let ledger = dir.join(DEFAULT_LEDGER);
+        let lock_text =
+            "[[package]]\nname = \"shared-lib\"\nversion = \"1.2.0\"\nchecksum = \"aaa\"\n";
+
+        lock_from(
+            &[s("lock"), s("-f"), s(ledger.to_string_lossy().to_string())],
+            lock_text,
+        )
+        .expect("lock 应接受 -f（Cargo.lock 走 stdin）");
+
+        // --build 内联清单：字符集闸放行合法名，拒绝非法字符
+        lock_from(
+            &[
+                s("lock"),
+                s("-f"),
+                s(ledger.to_string_lossy().to_string()),
+                s("--build"),
+                s("serde_json,git2"),
+            ],
+            lock_text,
+        )
+        .expect("合法 feature 清单");
+        assert!(
+            matches!(
+                lock_from(
+                    &[
+                        s("lock"),
+                        s("-f"),
+                        s(ledger.to_string_lossy().to_string()),
+                        s("--build"),
+                        s("a;b")
+                    ],
+                    lock_text
+                ),
+                Err(CliError::Usage(_))
+            ),
+            "分号不在 feature 名字符集内——自由文本不进账本"
+        );
+
+        let j = Journal::open_as(&ledger, 0).unwrap();
+        let titles: Vec<String> = j
+            .dag()
+            .nodes()
+            .iter()
+            .filter(|n| n.title.starts_with("COORD "))
+            .map(|n| n.title.clone())
+            .collect();
+        assert_eq!(
+            titles.len(),
+            2,
+            "无 build 与 --build=serde_json,git2 是两个坐标（逐字段相等才同坐标，by design）；非法字符集调用没建任何节点：{titles:?}"
+        );
+        assert!(
+            titles.iter().any(|t| t.ends_with("|-")),
+            "无 build 坐标在案"
+        );
+        assert!(
+            titles.iter().any(|t| t.ends_with("serde_json,git2")),
+            "带 build 坐标在案"
+        );
+        drop(j.into_dag().unwrap());
         fs::remove_dir_all(&dir).unwrap();
     }
 }

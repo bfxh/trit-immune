@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "mimosa-hook-status/v1",
+  "recordedAt": "2026-11-04T22:11:30.506Z",
+  "sessionId": "sess_d0cfb7a0-fe02-4f12-9817-80d6208e0b21",
+  "event": "PostToolUse",
+  "toolName": "Edit",
+  "file": "scripts/pin.py",
+  "outcome": "clear",
+  "coverage": "complete",
+  "findingCount": 0,
+  "durationMs": 12,
+  "hostState": "hook_complete",
+  "reportHint": ".mimosa/reports/"
+}

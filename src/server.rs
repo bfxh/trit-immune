@@ -9,7 +9,7 @@
 //!   URL 请求；任何未来出网一律走 [`crate::net::check_url`]。
 
 use crate::design::{self, DesignArea, PrIntake};
-use crate::diag::{self, Severity};
+use crate::diag::{self, Diagnostic, Severity};
 #[cfg(test)]
 use crate::fleet::Fleet;
 use crate::journal::Journal;
@@ -57,13 +57,94 @@ impl Server {
         });
         Ok(bound)
     }
+
+    /// TLS 直连形态（`tls` feature）：每连接先握手再进同一个连接循环。
+    /// 语义与 [`serve`] 逐字一致——**只有传输层换了，路由/账本/纪律全同**。
+    /// 证书生产用 CA 签发；测试用 `tls::generate_self_signed`（见 [`crate::tls`]）。
+    #[cfg(feature = "tls")]
+    pub fn serve_tls(
+        &self,
+        addr: SocketAddr,
+        config: rustls::ServerConfig,
+    ) -> io::Result<SocketAddr> {
+        let listener = TcpListener::bind(addr)?;
+        let bound = listener.local_addr()?;
+        let config = Arc::new(config);
+        let shared = Arc::clone(&self.journal);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(sock) = stream else { continue };
+                let shared = Arc::clone(&shared);
+                let config = Arc::clone(&config);
+                std::thread::spawn(move || {
+                    // 明文客户端连进来会在握手处失败——如实丢弃，不当 HTTP 处理
+                    let Ok(mut tls) = crate::tls::accept(&config, sock) else {
+                        return;
+                    };
+                    let _ = handle_conn(&mut tls, &shared);
+                    // 优雅关闭：TLS 要求 close_notify，裸 EOF 会被对端 rustls 客户端
+                    // 当协议错误（UnexpectedEof）——与明文版"写完即关"在这里分叉
+                    tls.conn.send_close_notify();
+                    let _ = tls.flush();
+                });
+            }
+        });
+        Ok(bound)
+    }
 }
 
-fn handle_conn(stream: &mut TcpStream, journal: &RwLock<Journal>) -> io::Result<()> {
+fn handle_conn<S: std::io::Read + std::io::Write>(
+    stream: &mut S,
+    journal: &RwLock<Journal>,
+) -> io::Result<()> {
     let (method, path, query, body) = read_request(stream)?;
     let (status, text) = route(journal, &method, &path, &query, &body);
     let resp = format_response(status, &text);
     stream.write_all(resp.as_bytes())
+}
+
+/// 检查类层落账（diag/lsp 共用同一语义与同一响应形状）：
+/// 任一 error → 层 `-1`；否则任一 warning → `0`；干净 → `+1`（检查的通过是权威结论）。
+fn record_check_layer(
+    journal: &RwLock<Journal>,
+    node: u32,
+    layer: &str,
+    diags: &[Diagnostic],
+) -> (u16, String) {
+    let verdict = diag::layer_verdict(diags);
+    let errors = diags
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .count();
+    let warnings = diags
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
+        .count();
+    let len = journal.read().expect("锁中毒").dag().nodes().len() as u32;
+    if node >= len {
+        return (404, format!("节点 #{node:02} 不存在\n"));
+    }
+    let applied = {
+        let mut j = journal.write().expect("锁中毒");
+        j.append_delta(&crate::Delta::Record {
+            id: crate::NodeId(node),
+            verdict,
+            evidence: None,
+            note: format!("{layer}：errors={errors} warnings={warnings}（检查类，可为 +1）"),
+        })
+    };
+    match applied {
+        Ok(()) => (
+            200,
+            format!(
+                "diagnostics={} errors={} warnings={} layer={verdict} check_may_plus1=true\n",
+                diags.len(),
+                errors,
+                warnings
+            ),
+        ),
+        Err(e) => (500, format!("写入失败：{e}\n")),
+    }
 }
 
 fn route(
@@ -178,55 +259,56 @@ fn route(
             Err(e) => (400, format!("帧解析失败：{e}\n")),
         },
         ("POST", "/v1/diag") => {
-            // 编译器管线桥：body = rustc --message-format=json 流
+            // 编译器管线桥：body = 编译器诊断输出。?format= rustc(默认)|tsc|gcc|eslint
             let Some((_, v)) = query.iter().find(|(k, _)| k == "node") else {
                 return (400, "缺 node 参数\n".into());
             };
             let Ok(node) = v.parse::<u32>() else {
                 return (400, format!("node 非数字：{v}\n"));
             };
-            // 守卫：垃圾输入拒绝（避免空 POST 把节点"洗"成 +1）
-            if body.trim().is_empty() || !diag::has_json(body) {
-                return (
-                    400,
-                    "无诊断数据（应为 rustc --message-format=json 流）\n".into(),
-                );
-            }
-            let diags = diag::parse_rustc_stream(body);
-            let verdict = diag::layer_verdict(&diags);
-            let errors = diags
+            let format = query
                 .iter()
-                .filter(|d| d.severity == Severity::Error)
-                .count();
-            let warnings = diags
-                .iter()
-                .filter(|d| d.severity == Severity::Warning)
-                .count();
-            let len = journal.read().expect("锁中毒").dag().nodes().len() as u32;
-            if node >= len {
-                return (404, format!("节点 #{node:02} 不存在\n"));
-            }
-            let applied = {
-                let mut j = journal.write().expect("锁中毒");
-                j.append_delta(&crate::Delta::Record {
-                    id: crate::NodeId(node),
-                    verdict,
-                    evidence: None,
-                    note: format!("编译层：errors={errors} warnings={warnings}（检查类，可为 +1）"),
-                })
+                .find(|(k, _)| k == "format")
+                .map(|(_, v)| v.as_str())
+                .unwrap_or("rustc");
+            let diags = match format {
+                "rustc" => {
+                    // 守卫：垃圾输入拒绝（避免空 POST 把节点"洗"成 +1）；
+                    // rustc 干净构建也输出 JSON（build-finished），所以 ≥1 行 JSON 是硬要求
+                    if body.trim().is_empty() || !diag::has_json(body) {
+                        return (
+                            400,
+                            "无诊断数据（应为 rustc --message-format=json 流）\n".into(),
+                        );
+                    }
+                    diag::parse_rustc_stream(body)
+                }
+                "tsc" => {
+                    // tsc 干净构建 stdout 为空——调用方约定发 `{}` 占位（非 JSON 横幅照发）；
+                    // 守卫同 rustc：至少一行合法 JSON，垃圾输入照样 400
+                    if body.trim().is_empty() || !diag::has_json(body) {
+                        return (400, "无诊断数据（tsc 流；干净构建发 {} 占位）\n".into());
+                    }
+                    diag::parse_tsc_stream(body)
+                }
+                // gcc/clang 与 eslint：整个 body 一个 JSON 数组（干净输出 `[]`），
+                // 不是数组 = 垃圾输入 → None → 400
+                "gcc" => match diag::parse_gcc_json(body) {
+                    Some(d) => d,
+                    None => return (400, "无诊断数据（gcc 格式应为一个 JSON 数组）\n".into()),
+                },
+                "eslint" => match diag::parse_eslint_json(body) {
+                    Some(d) => d,
+                    None => return (400, "无诊断数据（eslint 格式应为一个 JSON 数组）\n".into()),
+                },
+                other => {
+                    return (
+                        400,
+                        format!("未知 format：{other}（rustc|tsc|gcc|eslint）\n"),
+                    )
+                }
             };
-            match applied {
-                Ok(()) => (
-                    200,
-                    format!(
-                        "diagnostics={} errors={} warnings={} layer={verdict} check_may_plus1=true\n",
-                        diags.len(),
-                        errors,
-                        warnings
-                    ),
-                ),
-                Err(e) => (500, format!("写入失败：{e}\n")),
-            }
+            record_check_layer(journal, node, "编译层", &diags)
         }
         ("POST", "/v1/scan") => match parse_scan_body(body) {
             Ok(snippets) => {
@@ -274,40 +356,7 @@ fn route(
                 .into_iter()
                 .map(|d| d.into_diag())
                 .collect::<Vec<_>>();
-            let verdict = diag::layer_verdict(&diags);
-            let errors = diags
-                .iter()
-                .filter(|d| d.severity == Severity::Error)
-                .count();
-            let warnings = diags
-                .iter()
-                .filter(|d| d.severity == Severity::Warning)
-                .count();
-            let len = journal.read().expect("锁中毒").dag().nodes().len() as u32;
-            if node >= len {
-                return (404, format!("节点 #{node:02} 不存在\n"));
-            }
-            let applied = {
-                let mut j = journal.write().expect("锁中毒");
-                j.append_delta(&crate::Delta::Record {
-                    id: crate::NodeId(node),
-                    verdict,
-                    evidence: None,
-                    note: format!("LSP 层：errors={errors} warnings={warnings}（检查类，可为 +1）"),
-                })
-            };
-            match applied {
-                Ok(()) => (
-                    200,
-                    format!(
-                        "diagnostics={} errors={} warnings={} layer={verdict} check_may_plus1=true\n",
-                        diags.len(),
-                        errors,
-                        warnings
-                    ),
-                ),
-                Err(e) => (500, format!("写入失败：{e}\n")),
-            }
+            record_check_layer(journal, node, "LSP 层", &diags)
         }
         ("POST", "/v1/intake") => {
             // 设计决策生产线入口：分类（新决策/执行既有/退回设计队列）
@@ -336,6 +385,50 @@ fn route(
             };
             let routing = design::classify(&intake);
             (200, format!("routing={routing:?}\n"))
+        }
+        ("GET", "/v1/catalog") => {
+            // 发现目录（只读视图）：族折叠 + 验证层级 + 修正注记——手稿清单 TSV
+            let j = journal.read().expect("锁中毒");
+            let cat = crate::catalog::catalog(j.dag());
+            (200, crate::catalog::export_map_tsv(&cat))
+        }
+        ("POST", "/v1/triage-bridge") => {
+            // trit-re 台账桥（ROADMAP #51）：body = trit-re 的 JSONL 台账；
+            // ?parent=N（缺省 0）+ ?quarantine=0 解除自动隔离（缺省隔离）。
+            // 三值对齐：true → -1、unknown → 0、false 不入账（扫描器永不 +1）。
+            let parent = query
+                .iter()
+                .find(|(k, _)| k == "parent")
+                .and_then(|(_, v)| v.parse::<u32>().ok())
+                .unwrap_or(0);
+            let quarantine = !query
+                .iter()
+                .any(|(k, v)| k == "quarantine" && (v == "0" || v == "false"));
+            let len = {
+                let j = journal.read().expect("锁中毒");
+                j.dag().nodes().len() as u32
+            };
+            if parent >= len {
+                return (404, format!("父节点 #{parent:02} 不存在\n"));
+            }
+            let mut j = journal.write().expect("锁中毒");
+            match crate::retbridge::intake_triage(&mut j, crate::NodeId(parent), body, quarantine)
+            {
+                Ok(report) => (
+                    200,
+                    format!(
+                        "samples={} findings={} vulnerable={} unknown={} skipped_false={} bad_lines={} quarantined={} scanner_never_plus1=true\n",
+                        report.samples,
+                        report.findings,
+                        report.vulnerable,
+                        report.unknown,
+                        report.skipped_false,
+                        report.bad_lines,
+                        report.quarantined
+                    ),
+                ),
+                Err(e) => (500, format!("入账失败：{e}\n")),
+            }
         }
         ("GET", _) | ("POST", _) => (404, "未知路径\n".into()),
         _ => (405, "方法不允许\n".into()),
@@ -368,7 +461,9 @@ fn parse_scan_body(body: &str) -> Result<Vec<(crate::NodeId, String)>, String> {
 /// 一次 HTTP 请求解析结果：方法 / 路径 / 查询对 / 请求体。
 type ParsedRequest = (String, String, Vec<(String, String)>, String);
 
-pub(crate) fn read_request(stream: &mut TcpStream) -> io::Result<ParsedRequest> {
+pub(crate) fn read_request<S: std::io::Read + std::io::Write>(
+    stream: &mut S,
+) -> io::Result<ParsedRequest> {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 4096];
     let header_end = loop {
@@ -493,8 +588,13 @@ mod tests {
     use crate::fleet_server::route_fleet;
 
     fn temp_journal() -> Journal {
-        let p =
-            std::env::temp_dir().join(format!("trit-immune-srv-t-{}.journal", std::process::id()));
+        // 文件名带原子计数器：并行测试同 pid 撞名会让 create_as 报"文件存在"
+        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let p = std::env::temp_dir().join(format!(
+            "trit-immune-srv-t-{}-{n}.journal",
+            std::process::id()
+        ));
         let _ = std::fs::remove_file(&p);
         Journal::create_as(&p, "t", 0).unwrap()
     }
@@ -565,6 +665,44 @@ mod tests {
         assert_eq!(s, 405);
         let (s, _) = route_fleet(&shared, "GET", "/v1/fleet/nope", &[], "");
         assert_eq!(s, 404);
+    }
+
+    #[test]
+    fn fleet_route_catalog_endpoint() {
+        let f = temp_fleet();
+        let shared = std::sync::RwLock::new(f);
+        // 无参：逐仓统计表（board 风格）
+        let (s, body) = route_fleet(&shared, "GET", "/v1/fleet/catalog", &[], "");
+        assert_eq!(s, 200);
+        assert!(
+            body.starts_with(
+                "name\tfindings\tfamilies\treproduced\tadjudicated\tclaimed\tcontradictions\tverified_ratio\n"
+            ),
+            "{body}"
+        );
+        assert!(
+            body.contains("up\t1\t1\t0\t0\t1\t0\t0.0000"),
+            "up 仓 1 发现 1 族，无证据 -1 = 纯声称 ratio 0：{body}"
+        );
+        assert!(
+            body.contains("down\t1\t1\t0\t1\t0\t0\t1.0000"),
+            "down 仓 +1 = 已裁定 ratio 1：{body}"
+        );
+        // ?repo=：该仓完整手稿清单 TSV
+        let q = vec![("repo".to_string(), "up".to_string())];
+        let (s, body) = route_fleet(&shared, "GET", "/v1/fleet/catalog", &q, "");
+        assert_eq!(s, 200);
+        assert!(body.starts_with("# trit-immune catalog map v1"), "{body}");
+        assert!(
+            body.contains("NODE\t1\tdelta\tclaimed\t-1\tfalse\t上游节点"),
+            "层级=证据形态（无证据 -1 是 claimed 不是 adjudicated）：{body}"
+        );
+        // 未知仓 404；已知端点方法错 405
+        let q2 = vec![("repo".to_string(), "ghost".to_string())];
+        let (s, _) = route_fleet(&shared, "GET", "/v1/fleet/catalog", &q2, "");
+        assert_eq!(s, 404);
+        let (s, _) = route_fleet(&shared, "POST", "/v1/fleet/catalog", &[], "");
+        assert_eq!(s, 405, "KNOWN 表已收 catalog");
     }
 
     #[test]
@@ -682,5 +820,85 @@ mod tests {
         assert_eq!(status, 404);
         let (status, _) = route(&j, "GET", "/v1/gate", &[], "");
         assert_eq!(status, 400, "缺 tip 参数");
+    }
+
+    #[test]
+    fn catalog_endpoint_read_only_map() {
+        use crate::{NodeId, NodeKind, Trit};
+        let mut j = temp_journal();
+        let a = j
+            .spawn(NodeId(0), NodeKind::Delta, "sql 注入（login）")
+            .unwrap();
+        let b = j
+            .spawn(NodeId(0), NodeKind::AttackVector, "SQL 注入 (admin)")
+            .unwrap();
+        j.record(a, Trit::Vulnerable, None, "打穿").unwrap();
+        j.record(b, Trit::Unknown, None, "声称").unwrap();
+        let j = RwLock::new(j);
+        let (s, body) = route(&j, "GET", "/v1/catalog", &[], "");
+        assert_eq!(s, 200);
+        assert!(
+            body.starts_with("# trit-immune catalog map v1"),
+            "手稿清单 TSV 形态：{body}"
+        );
+        assert!(
+            body.contains("FAM\tsql 注入"),
+            "同根因两节点折叠成族：{body}"
+        );
+        assert!(
+            body.contains("NODE\t2\tattack\tclaimed\t0\tfalse"),
+            "层级/裁决/隔离逐列在 TSV：{body}"
+        );
+        assert!(body.ends_with("# correction\tnode\tkind\n"), "修正段收尾");
+        // POST 走未知路径兜底（单仓路由的既有约定）
+        let (s, _) = route(&j, "POST", "/v1/catalog", &[], "");
+        assert_eq!(s, 404);
+    }
+
+    #[test]
+    fn triage_bridge_endpoint_bridges_real_jsonl() {
+        use crate::{NodeId, NodeKind, Trit};
+        let mut j = temp_journal();
+        let host = j.spawn(NodeId(0), NodeKind::Delta, "宿主").unwrap();
+        let j = RwLock::new(j);
+        let jsonl = concat!(
+            r#"{"kind":"file","schema":3,"sha256":"beef","size":5}"#,
+            "\n",
+            r#"{"kind":"judgment","sha256":"beef","id":"injection","title":"远程注入","value":"true","four":"T","support":[],"refute":[],"unknown":[]}"#,
+            "\n",
+            r#"{"kind":"judgment","sha256":"beef","id":"packed","title":"加壳","value":"false","four":"N","support":[],"refute":[],"unknown":[]}"#,
+            "\n",
+        );
+        let q = vec![("parent".to_string(), host.0.to_string())];
+        let (s, body) = route(&j, "POST", "/v1/triage-bridge", &q, jsonl);
+        assert_eq!(s, 200, "{body}");
+        assert!(body.contains("samples=1"), "{body}");
+        assert!(body.contains("vulnerable=1"), "true → -1：{body}");
+        assert!(body.contains("skipped_false=1"), "False 不入账：{body}");
+        assert!(body.contains("scanner_never_plus1=true"), "{body}");
+        // 账面：样本节点挂宿主下（隔离），发现挂样本下（true → -1）
+        let dag = j.read().expect("锁").dag().clone();
+        let sample = dag
+            .nodes()
+            .iter()
+            .find(|n| n.parent == Some(host) && n.title.contains("trit-re 样本 beef"))
+            .expect("样本节点在账")
+            .id;
+        assert!(dag.node(sample).quarantined, "外部输入自动隔离");
+        let findings: Vec<_> = dag
+            .nodes()
+            .iter()
+            .filter(|n| n.parent == Some(sample))
+            .collect();
+        assert_eq!(findings.len(), 1, "true 判定一条发现（false 不入账）");
+        assert_eq!(
+            findings[0].verdict,
+            Trit::Vulnerable,
+            "true → -1（扫描器永不 +1：false 那条没进来）"
+        );
+        // 缺父 404
+        let bad_q = vec![("parent".to_string(), "99".to_string())];
+        let (s, _) = route(&j, "POST", "/v1/triage-bridge", &bad_q, jsonl);
+        assert_eq!(s, 404);
     }
 }

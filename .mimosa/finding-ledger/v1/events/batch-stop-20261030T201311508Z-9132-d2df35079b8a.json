@@ -1,0 +1,44 @@
+{
+  "schemaVersion": "mimosa-finding-ledger-batch/v1",
+  "batchId": "stop-20261030T201311508Z-9132-d2df35079b8a",
+  "runId": "20261030T201311508Z-9132-d2df35079b8a",
+  "runStatus": "completed",
+  "coverage": {
+    "status": "complete",
+    "reasons": []
+  },
+  "source": {
+    "component": "zcode-hook",
+    "operationId": "Stop"
+  },
+  "revision": null,
+  "diffHash": "234e73fe0a110407f294bb1a21a6ac1a3502139baeaa8242636c301bae0b6c1d",
+  "rulesVersion": "unavailable",
+  "sessionHash": "ac101c5b43d84ae51c13350652902589991b79eeeaa80580a31527acfb18555a",
+  "reportRef": ".mimosa/reports/task-review-sess_32eb5f35-aeba-4fc8-baeb-0bbb28a7e599-20261030T201311508Z-9132-d2df35079b8a.json",
+  "events": [],
+  "observedFindingIds": [],
+  "verifiedFiles": [
+    {
+      "file": "src/taskmd.rs",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "src/server.rs",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "src/lib.rs",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "tests/taskmd.rs",
+      "direct": "complete",
+      "projectContext": "partial"
+    }
+  ],
+  "recordedAt": "2026-10-30T20:13:11.884Z"
+}

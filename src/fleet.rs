@@ -33,9 +33,10 @@ pub struct Fleet {
     cross_links: Vec<CrossRepoLink>,
     link_ledger: Option<PathBuf>,
     /// 依赖坐标声明（见 [`crate::coords`]）：谁提供这个坐标、谁实际用到它。
-    provides: Vec<crate::coords::CoordDecl>,
-    uses: Vec<crate::coords::CoordDecl>,
-    coord_ledger: Option<PathBuf>,
+    /// 方法面在 [`crate::coords_fleet`]，字段留在此处（同一 `Fleet` 身份）。
+    pub(crate) provides: Vec<crate::coords::CoordDecl>,
+    pub(crate) uses: Vec<crate::coords::CoordDecl>,
+    pub(crate) coord_ledger: Option<PathBuf>,
 }
 
 /// 聚合收敛表的一行。
@@ -469,120 +470,6 @@ impl Fleet {
         Ok(results)
     }
 
-    // ---- 依赖坐标（共享库在多项目下的身份；实现见 [`crate::coords`]）----
-
-    /// 打开坐标注册表（追加式；声明影响裁决，账外无数据）。
-    pub fn open_coord_ledger(&mut self, path: impl Into<PathBuf>) {
-        self.coord_ledger = Some(path.into());
-    }
-
-    pub(crate) fn coord_ledger_path(&self) -> Option<PathBuf> {
-        self.coord_ledger.clone()
-    }
-
-    pub(crate) fn push_provider(&mut self, d: crate::coords::CoordDecl) {
-        self.provides.push(d);
-    }
-
-    /// 把已在 DAG 里的坐标节点登记进声明表（不重复登记）。
-    pub(crate) fn adopt_use(&mut self, repo: &str, node: NodeId, coord: &crate::coords::CoordKey) {
-        if !self
-            .uses
-            .iter()
-            .any(|d| d.repo == repo && d.coord.key() == coord.key())
-        {
-            self.uses.push(crate::coords::CoordDecl {
-                repo: repo.to_string(),
-                node,
-                coord: coord.clone(),
-            });
-        }
-    }
-
-    pub fn provides(&self) -> &[crate::coords::CoordDecl] {
-        &self.provides
-    }
-
-    pub fn uses(&self) -> &[crate::coords::CoordDecl] {
-        &self.uses
-    }
-
-    /// 声明某仓某节点是某个依赖坐标的裁决出处。
-    pub fn declare_provider(
-        &mut self,
-        repo: &str,
-        node: NodeId,
-        coord: crate::coords::CoordKey,
-    ) -> io::Result<()> {
-        crate::coords::declare_provider(self, repo, node, coord)
-    }
-
-    /// 把一份 `Cargo.lock` 入账为该仓的消费坐标节点（幂等；`build` 见 [`crate::coords`]）。
-    pub fn attach_lock(
-        &mut self,
-        repo: &str,
-        lock_text: &str,
-        build: Option<&str>,
-    ) -> io::Result<crate::coords::AttachReport> {
-        crate::coords::attach_lock(self, repo, lock_text, build)
-    }
-
-    /// 坐标派生边（精确匹配才连；不落注册表，是声明的确定性视图）。
-    pub fn coord_edges(&self) -> Vec<CrossRepoLink> {
-        crate::coords::derive_edges(&self.provides, &self.uses)
-    }
-
-    /// **全部跨仓边** = 人工/接口声明的边 ⊕ 坐标派生的边。
-    /// 传播视图（[`contamination`]）、渲染、攻击链、落地影响都读这一个口径——
-    /// 免得坐标边只在落账时生效、查询视图却看不见（两套真相）。
-    pub fn cross_edges(&self) -> Vec<CrossRepoLink> {
-        let mut v = self.cross_links.clone();
-        v.extend(self.coord_edges());
-        v
-    }
-
-    /// 坐标级跨仓落账（语义与 [`sync_cross_repo`] 同一套纪律，只是边来自坐标声明）。
-    pub fn sync_coordinates(&mut self, note: &str) -> io::Result<Vec<CrossRepoDelta>> {
-        crate::coords::sync(self, note)
-    }
-
-    /// 坐标缺口清单（每一条都是 0 态候选：**不匹配不静默**）。
-    pub fn coord_gaps(&self) -> Vec<crate::coords::CoordGap> {
-        crate::coords::gaps(self, &self.provides, &self.uses)
-    }
-
-    /// 坐标视图（TSV：PROV/USE/GAP 三段，供 HTTP 与 CLI 直读）。
-    pub fn render_coords(&self) -> String {
-        crate::coords::render(self)
-    }
-
-    /// 从坐标注册表读回声明（追加式；加载期不验证，失效声明由 [`coord_gaps`] 上报）。
-    /// 返回 (提供者数, 消费者数, 坏行数)。已存在的 (仓, 坐标键) 不重复入账。
-    pub fn load_coords(&mut self, path: &Path) -> io::Result<(usize, usize, usize)> {
-        let (provides, uses, bad) = crate::coords::load_lines(path)?;
-        let mut np = 0;
-        let mut nu = 0;
-        for d in provides {
-            if self.provides.iter().any(|e| e == &d) {
-                continue;
-            }
-            self.provides.push(d);
-            np += 1;
-        }
-        for d in uses {
-            if self
-                .uses
-                .iter()
-                .any(|e| e.repo == d.repo && e.coord.key() == d.coord.key())
-            {
-                continue;
-            }
-            self.uses.push(d);
-            nu += 1;
-        }
-        Ok((np, nu, bad))
-    }
-
     /// **多跳攻击链枚举**（fleet 级渗透路径报告）——实现已拆至
     /// [`crate::attack`]（上游 module budget：单文件 ≤800 行），此处薄委托
     /// 保持方法路径。语义见 [`crate::attack`] 模块文档。
@@ -600,6 +487,63 @@ impl Fleet {
 /// 攻击链类型与实现已拆至 [`crate::attack`]——此处 re-export 保持
 /// `trit_immune::fleet::*` 路径兼容。
 pub use crate::attack::{AttackChain, AttackChains, ChainStep, ChainVia};
+
+/// 落账标记（跨仓同步与坐标同步共同拥有）：`note ← 源:节点` 追加在
+/// note 尾部——机器可查的"这个裁决是导入的"标记；人工 note 不该写这个箭头。
+const LANDED_MARKER: &str = " ← ";
+
+/// 节点的裁决是否为**跨仓落账导入**（历史带 [`LANDED_MARKER`]）。
+///
+/// 这不是元数据字段，是账本原生证据：落账 Delta 就在 journal 里，
+/// 标记跟着 Delta 走，重放后依然可判——目录/任务源都是账本的纯函数。
+pub fn is_imported(dag: &crate::dag::ImmuneDag, node: NodeId) -> bool {
+    dag.node(node)
+        .history
+        .iter()
+        .any(|e| e.note.contains(LANDED_MARKER))
+}
+
+/// 舰队级任务源的一条：任务落在哪个仓。
+#[derive(Debug, Clone, PartialEq)]
+pub struct FleetTask {
+    pub repo: String,
+    pub task: crate::scheduler::Task,
+}
+
+/// **舰队级劳动折叠：「修上游」纪律。**
+///
+/// 跨仓污染把同一根因的 `-1` 落账进下游仓——节点级任务源会对每个回声
+/// 都排活。舰队级视图里，**导入的裁决（[`is_imported`]）不排活**：上游
+/// 修好后 `sync_cross_repo` 再跑一轮，回声自愈（变坏才落账，变好同样只
+/// 需要重放纪律）。这样队列里只剩"本地自挣的坏消息"：
+///
+/// - 每仓（按仓名序）跑 [`crate::catalog::family_tasks`]（族折叠 +
+///   隔离节点级落点，语义见彼处）；
+/// - 落点为导入节点且未隔离的族级任务 → 丢弃（上游的事）；
+/// - **隔离节点的 Review 保留**——隔离是本仓的放行状态，与本仓人有关，
+///   与坏消息从哪来无关。
+pub fn family_tasks_fleet(fleet: &Fleet) -> Vec<FleetTask> {
+    let mut out = Vec::new();
+    for (name, j) in fleet.repos() {
+        let dag = j.dag();
+        let cat = crate::catalog::catalog(dag);
+        for task in crate::catalog::family_tasks(&cat, dag) {
+            let target = match &task {
+                crate::scheduler::Task::Review { node, .. } => *node,
+                crate::scheduler::Task::Fix { node, .. } => *node,
+                crate::scheduler::Task::Refactor { node, .. } => *node,
+            };
+            if is_imported(dag, target) && !dag.node(target).quarantined {
+                continue;
+            }
+            out.push(FleetTask {
+                repo: name.to_string(),
+                task,
+            });
+        }
+    }
+    out
+}
 
 /// 一条跨仓落账：源端 (仓, 节点) → 目标端 (仓, 节点)，落账裁决。
 /// 一条跨仓落账：源端 (仓, 节点) → 目标端 (仓, 节点)，落账裁决。
@@ -831,5 +775,167 @@ mod tests {
         let _ = fs::remove_file(&pa);
         let _ = fs::remove_file(&pb);
         let _ = fs::remove_file(&ledger);
+    }
+
+    /// 双仓任务源测试夹具：up 自挣 -1 一族；down 一条会经穿透边落账的回声
+    /// 节点 + 一条本地自挣 -1。返回 (舰队, 两仓临时文件路径)。
+    fn two_repo_fleet() -> (Fleet, std::path::PathBuf, std::path::PathBuf) {
+        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir();
+        let (pa, pb) = (
+            dir.join(format!("fleet-ft-a-{}-{n}.journal", std::process::id())),
+            dir.join(format!("fleet-ft-b-{}-{n}.journal", std::process::id())),
+        );
+        let _ = fs::remove_file(&pa);
+        let _ = fs::remove_file(&pb);
+        let mut a = Journal::create_as(&pa, "main", 0).unwrap();
+        let na = a
+            .spawn(NodeId(0), crate::NodeKind::Delta, "根因 (up)")
+            .unwrap();
+        a.record(na, Trit::Vulnerable, None, "本地打穿").unwrap();
+        a.into_dag().unwrap();
+        let mut b = Journal::create_as(&pb, "main", 1).unwrap();
+        let _nb = b
+            .spawn(NodeId(0), crate::NodeKind::Delta, "根因 (down)")
+            .unwrap();
+        let nz = b
+            .spawn(NodeId(0), crate::NodeKind::Delta, "本地自挣 (down)")
+            .unwrap();
+        b.record(nz, Trit::Vulnerable, None, "本地打穿").unwrap();
+        b.into_dag().unwrap();
+        let mut fleet = Fleet::new();
+        fleet.add("up", Journal::open_as(&pa, 0).unwrap()).unwrap();
+        fleet
+            .add("down", Journal::open_as(&pb, 1).unwrap())
+            .unwrap();
+        (fleet, pa, pb)
+    }
+
+    #[test]
+    fn fleet_tasks_fix_source_not_echo() {
+        let (mut fleet, pa, pb) = two_repo_fleet();
+        // 穿透边 up#1 → down#1，反熵落账：down#1 变 -1（导入回声）
+        fleet
+            .add_cross_link(
+                ("up", NodeId(1)),
+                ("down", NodeId(1)),
+                Trit::Vulnerable,
+                "穿透",
+            )
+            .unwrap();
+        let landed = fleet.sync_cross_repo("测试").unwrap();
+        assert_eq!(landed.len(), 1, "落账一条：down#1 ← up:1");
+
+        let tasks = family_tasks_fleet(&fleet);
+        assert_eq!(
+            tasks.len(),
+            2,
+            "up Fix + down 本地自挣 Fix，回声不排活：{tasks:?}"
+        );
+        assert!(
+            tasks.iter().any(|t| t.repo == "up"
+                && matches!(
+                    t.task,
+                    crate::scheduler::Task::Fix {
+                        node: NodeId(1),
+                        ..
+                    }
+                )),
+            "上游源头排 Fix"
+        );
+        assert!(
+            tasks.iter().any(|t| t.repo == "down"
+                && matches!(
+                    t.task,
+                    crate::scheduler::Task::Fix {
+                        node: NodeId(2),
+                        ..
+                    }
+                )),
+            "down 本地自挣排 Fix"
+        );
+        assert!(
+            !tasks.iter().any(|t| t.repo == "down"
+                && matches!(
+                    t.task,
+                    crate::scheduler::Task::Fix {
+                        node: NodeId(1),
+                        ..
+                    }
+                )),
+            "导入回声（down#1 ← up:1）不排活——上游修好反熵自愈"
+        );
+        // 上游修好后再同步：回声被"变好"洗回（变坏才落账的对称面不落账，
+        // 但 is_imported 判据与下游裁决无关——回声永远不在下游队列）
+        let tasks2 = family_tasks_fleet(&fleet);
+        assert_eq!(tasks2.len(), 2, "任务源是状态的纯函数，与同步次数无关");
+
+        let _ = fs::remove_file(&pa);
+        let _ = fs::remove_file(&pb);
+    }
+
+    #[test]
+    fn fleet_tasks_keep_quarantined_even_if_imported() {
+        let (mut fleet, pa, pb) = two_repo_fleet();
+        fleet
+            .add_cross_link(
+                ("up", NodeId(1)),
+                ("down", NodeId(1)),
+                Trit::Vulnerable,
+                "穿透",
+            )
+            .unwrap();
+        fleet.sync_cross_repo("测试").unwrap();
+        // 导入节点被隔离：隔离是本仓放行状态，与本仓人有关——Review 保留
+        {
+            let down = fleet.get_mut("down").unwrap();
+            down.quarantine(NodeId(1), "整链冻结").unwrap();
+        }
+        let tasks = family_tasks_fleet(&fleet);
+        assert_eq!(
+            tasks.len(),
+            3,
+            "up Fix + down 隔离 Review + down 本地自挣 Fix：{tasks:?}"
+        );
+        assert!(
+            tasks.iter().any(|t| t.repo == "down"
+                && matches!(
+                    t.task,
+                    crate::scheduler::Task::Review {
+                        node: NodeId(1),
+                        ..
+                    }
+                )),
+            "导入且隔离 → 节点级 Review 保留（落点必须精确）"
+        );
+        assert!(
+            !tasks.iter().any(|t| t.repo == "down"
+                && matches!(
+                    t.task,
+                    crate::scheduler::Task::Fix {
+                        node: NodeId(1),
+                        ..
+                    }
+                )),
+            "导入节点即使隔离也不产 Fix（修复不越过隔离，复核才是出口）"
+        );
+
+        let _ = fs::remove_file(&pa);
+        let _ = fs::remove_file(&pb);
+    }
+
+    #[test]
+    fn is_imported_matches_landed_marker_only() {
+        let mut dag = crate::dag::ImmuneDag::root("main");
+        let a = dag.spawn(NodeId(0), crate::NodeKind::Delta, "本地的");
+        let b = dag.spawn(NodeId(0), crate::NodeKind::Delta, "导入的");
+        dag.record(a, Trit::Vulnerable, None, "本地打穿");
+        dag.record(b, Trit::Vulnerable, None, "测试 ← up:1");
+        assert!(!is_imported(&dag, a), "人工 note 无落账标记 → 非导入");
+        assert!(
+            is_imported(&dag, b),
+            "带 ` ← ` 标记 → 导入（两条同步路径共同拥有）"
+        );
     }
 }

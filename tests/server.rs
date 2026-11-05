@@ -161,6 +161,60 @@ fn diag_endpoint_two_states_and_garbage_guard() {
 }
 
 #[test]
+fn diag_endpoint_formats_tsc_gcc_eslint() {
+    // 编译器管线扩展：?format= rustc(默认)|tsc|gcc|eslint——同一检查类语义，
+    // 各家输出形态不同：rustc/tsc 行式流，gcc/clang 与 eslint 整体 JSON 数组
+    let pa = temp("srv-diag-fmt");
+    let _ = std::fs::remove_file(&pa);
+    let mut j = Journal::create_as(&pa, "main", 0).unwrap();
+    let _ = j.spawn(NodeId(0), NodeKind::Delta, "功能").unwrap();
+    j.into_dag().unwrap();
+    let addr = bind_server(Journal::open_as(&pa, 0).unwrap());
+
+    // tsc：error 诊断 → -1（横幅行如实跳过）
+    let tsc_err = concat!(
+        r#"{"file":"a.ts","line":3,"column":5,"severity":"error","code":"TS2304","message":"Cannot find name 'foo'."}"#,
+        "\n",
+        "Version 5.6.3\n",
+    );
+    let (s, b) = server::client::post(addr, "/v1/diag?node=1&format=tsc", tsc_err).unwrap();
+    assert_eq!(s, 200);
+    assert!(b.contains("layer=-1"), "{b}");
+    // tsc 干净构建 stdout 为空——调用方约定发 {} 占位 → 零诊断 → +1
+    let (s, b) = server::client::post(addr, "/v1/diag?node=1&format=tsc", "{}").unwrap();
+    assert_eq!(s, 200);
+    assert!(b.contains("layer=+1"), "{b}");
+    // tsc 纯垃圾（无一行 JSON）→ 400
+    let (s, _) = server::client::post(addr, "/v1/diag?node=1&format=tsc", "tsc: 炸了").unwrap();
+    assert_eq!(s, 400);
+
+    // gcc/clang：数组带 error → -1（option 进 code）
+    let gcc_err = r#"[{"kind":"error","message":"'foo' undeclared","locations":[{"file":"m.c","line":3,"column":5}],"option":"-Wundef"}]"#;
+    let (s, b) = server::client::post(addr, "/v1/diag?node=1&format=gcc", gcc_err).unwrap();
+    assert_eq!(s, 200);
+    assert!(b.contains("errors=1") && b.contains("layer=-1"), "{b}");
+    // 干净编译输出 [] → 合法 JSON、零诊断 → +1
+    let (s, b) = server::client::post(addr, "/v1/diag?node=1&format=gcc", "[]").unwrap();
+    assert_eq!(s, 200);
+    assert!(b.contains("layer=+1"), "{b}");
+    // 非数组 = 垃圾输入 → 400
+    let (s, _) = server::client::post(addr, "/v1/diag?node=1&format=gcc", "gcc: not json").unwrap();
+    assert_eq!(s, 400);
+
+    // eslint：warning only → 0（可疑，进下一层）
+    let eslint_warn = r#"[{"filePath":"a.js","messages":[{"severity":1,"line":2,"message":"prefer const","ruleId":"prefer-const"}]}]"#;
+    let (s, b) = server::client::post(addr, "/v1/diag?node=1&format=eslint", eslint_warn).unwrap();
+    assert_eq!(s, 200);
+    assert!(b.contains("warnings=1") && b.contains("layer=0"), "{b}");
+
+    // 未知 format → 400（不得当 rustc 兜底）
+    let (s, _) = server::client::post(addr, "/v1/diag?node=1&format=nope", "[]").unwrap();
+    assert_eq!(s, 400);
+
+    let _ = std::fs::remove_file(&pa);
+}
+
+#[test]
 fn lsp_endpoint_two_states() {
     // LSP 桥：publishDiagnostics 流 → 层裁决（检查类语义，与 /v1/diag 对称）
     let pa = temp("srv-lsp");

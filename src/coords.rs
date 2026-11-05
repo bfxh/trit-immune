@@ -391,7 +391,7 @@ impl Role {
 
 /// 编码一条坐标声明（追加式注册表行，9 列）：
 /// `COORD\t<PROV|USE>\t<仓>\t<节点>\t<name>\t<version>\t<source>\t<digest>\t<build>`。
-/// 每列独立走 [`esc`]，故行内永不出现制表符/换行，缺字段以 `-` 占位。
+/// 每列独立走 `delta::esc`（crate 内部），故行内永不出现制表符/换行，缺字段以 `-` 占位。
 pub fn encode_line(role: Role, repo: &str, node: NodeId, coord: &CoordKey) -> String {
     format!(
         "COORD\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",

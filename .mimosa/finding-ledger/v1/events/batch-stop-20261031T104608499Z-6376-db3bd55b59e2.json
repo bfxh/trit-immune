@@ -1,0 +1,39 @@
+{
+  "schemaVersion": "mimosa-finding-ledger-batch/v1",
+  "batchId": "stop-20261031T104608499Z-6376-db3bd55b59e2",
+  "runId": "20261031T104608499Z-6376-db3bd55b59e2",
+  "runStatus": "completed",
+  "coverage": {
+    "status": "complete",
+    "reasons": []
+  },
+  "source": {
+    "component": "zcode-hook",
+    "operationId": "Stop"
+  },
+  "revision": "5bc179b3e3576c04cb23e39bde5ed18c3fbca753",
+  "diffHash": "a21e5c3ab5c34a6ffd3980f5d1049fcbd2dc4c192367a46c92adc5355960c60e",
+  "rulesVersion": "unavailable",
+  "sessionHash": "ac101c5b43d84ae51c13350652902589991b79eeeaa80580a31527acfb18555a",
+  "reportRef": ".mimosa/reports/task-review-sess_32eb5f35-aeba-4fc8-baeb-0bbb28a7e599-20261031T104608499Z-6376-db3bd55b59e2.json",
+  "events": [],
+  "observedFindingIds": [],
+  "verifiedFiles": [
+    {
+      "file": "src/fleet.rs",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "src/lib.rs",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "tests/crossrepo.rs",
+      "direct": "complete",
+      "projectContext": "partial"
+    }
+  ],
+  "recordedAt": "2026-10-31T10:46:08.833Z"
+}

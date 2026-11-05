@@ -55,6 +55,14 @@ fn statement_json(title: &str, verdict: Trit, note: &str) -> String {
     )
 }
 
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(64);
+    for b in sha256(bytes) {
+        s.push_str(&format!("{b:02x}"));
+    }
+    s
+}
+
 /// 产出签名 attestation：subject digest 绑定账本内容，predicate 照实转写
 /// 全部非根节点的当前裁决（`+1` 记 `verified`——不区分 not_affected/fixed，
 /// 那是 [`crate::vex`] 的派生职责）。
@@ -65,16 +73,35 @@ pub fn attest(
     key: &[u8],
     key_id: &str,
 ) -> Attestation {
+    build_attestation(dag, author, product, key, key_id, false)
+}
+
+/// 同 [`attest`]，但 subject 多绑一份**手稿清单摘要**
+/// （[`crate::catalog::export_map_tsv`] 的 SHA-256，名字 `{product}#catalog-map`）。
+///
+/// 目录是账本的纯函数——两份摘要任一变更都验签失败；价值在消费方可以
+/// **独立核对目录侧**（族折叠/验证层级/修正注记）而不必重放整本账：
+/// 拿到 attestation 的人重算目录摘要即可确认"声明的目录就是账本的目录"。
+pub fn attest_with_catalog(
+    dag: &ImmuneDag,
+    author: &str,
+    product: &str,
+    key: &[u8],
+    key_id: &str,
+) -> Attestation {
+    build_attestation(dag, author, product, key, key_id, true)
+}
+
+fn build_attestation(
+    dag: &ImmuneDag,
+    author: &str,
+    product: &str,
+    key: &[u8],
+    key_id: &str,
+    include_catalog: bool,
+) -> Attestation {
     // subject digest：账本全量 TSV 的 SHA-256（内容变 → digest 变）
-    let ledger_tsv = export_dag_tsv(dag);
-    let digest_hex = {
-        let d = sha256(ledger_tsv.as_bytes());
-        let mut s = String::with_capacity(64);
-        for b in d {
-            s.push_str(&format!("{b:02x}"));
-        }
-        s
-    };
+    let digest_hex = sha256_hex(export_dag_tsv(dag).as_bytes());
 
     let mut predicate = String::with_capacity(256 + dag.nodes().len() * 128);
     predicate.push_str("{\"author\": ");
@@ -102,7 +129,17 @@ pub fn attest(
     payload.push_str(&json_escape(product));
     payload.push_str(", \"digest\": {\"sha256\": ");
     payload.push_str(&json_escape(&digest_hex));
-    payload.push_str("}}],\n  \"predicateType\": ");
+    payload.push_str("}}");
+    if include_catalog {
+        let map_digest =
+            sha256_hex(crate::catalog::export_map_tsv(&crate::catalog::catalog(dag)).as_bytes());
+        payload.push_str(", {\"name\": ");
+        payload.push_str(&json_escape(&format!("{product}#catalog-map")));
+        payload.push_str(", \"digest\": {\"sha256\": ");
+        payload.push_str(&json_escape(&map_digest));
+        payload.push_str("}}");
+    }
+    payload.push_str("],\n  \"predicateType\": ");
     payload.push_str(&json_escape(PREDICATE_TYPE));
     payload.push_str(",\n  \"predicate\": ");
     payload.push_str(&predicate);
@@ -191,5 +228,37 @@ mod tests {
             .and_then(|s| s.as_arr())
             .unwrap();
         assert_eq!(stmts.len(), 2, "根跳过，两个业务节点");
+    }
+
+    #[test]
+    fn catalog_attestation_binds_manuscript_map() {
+        let dag = sample_dag();
+        let att = attest_with_catalog(&dag, "red-team", "my-lib", b"k", "k1");
+        assert!(verify(&att, b"k"), "双 subject 整体签名应通过");
+        // 第二 subject = 手稿清单摘要，与独立重算逐字节一致
+        let map_digest =
+            sha256_hex(crate::catalog::export_map_tsv(&crate::catalog::catalog(&dag)).as_bytes());
+        assert!(
+            att.payload.contains("my-lib#catalog-map"),
+            "subject 名可寻址：{}",
+            att.payload
+        );
+        assert!(
+            att.payload.contains(&map_digest),
+            "目录摘要与独立重算一致（消费方可独立核对目录侧）"
+        );
+        // 对照：普通 attest 不带第二 subject
+        let plain = attest(&dag, "red-team", "my-lib", b"k", "k1");
+        assert!(!plain.payload.contains("catalog-map"), "旧行为不漂移");
+        // 账本变更 → 账本与目录两份摘要都变 → payload 变（整体绑定）
+        let mut dag2 = dag.clone();
+        let c = dag2.spawn(NodeId(0), NodeKind::Delta, "TRI003-新发现");
+        dag2.record(c, Trit::Vulnerable, None, "新漏洞");
+        let att2 = attest_with_catalog(&dag2, "red-team", "my-lib", b"k", "k1");
+        assert_ne!(
+            att.payload, att2.payload,
+            "账本变了双摘要必变（catalog 是账本的纯函数）"
+        );
+        assert!(verify(&att2, b"k"), "新账本的新签名应通过");
     }
 }

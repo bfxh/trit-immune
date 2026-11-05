@@ -10,14 +10,15 @@
 //! - `GET  /v1/fleet/verdicts?repo=X` — X 仓有效裁决（自身 ∧ 舰队污染）
 //! - `GET  /v1/fleet/verdict?repo=X&node=N` — 单节点当前裁决
 //! - `GET  /v1/fleet/attacks?repo=&node=` — 多跳攻击链
+//! - `GET  /v1/fleet/catalog[?repo=X]` — 发现目录：无参 = 逐仓统计表；带 repo = 该仓手稿清单 TSV
 //! - `POST /v1/fleet/links` — 声明跨仓边；body 每行 `from_repo\tfrom_node\tto_repo\tto_node\tpass\tnote`
 //! - `POST /v1/fleet/record` — 仓内写裁决；body `repo\tnode\tverdict\tnote`
 //! - `POST /v1/fleet/sync` — 跨仓 Delta 反熵；body = note（可空）
 
 use crate::fleet::Fleet;
 use crate::server::{format_response, read_request};
-use std::io::{self, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::io;
+use std::net::{SocketAddr, TcpListener};
 use std::sync::{Arc, RwLock};
 
 /// 共享的多仓舰队服务（fleet 层的 HTTP 面，与单仓 `crate::server::Server` 平行）。
@@ -53,9 +54,43 @@ impl FleetServer {
         });
         Ok(bound)
     }
+
+    /// TLS 直连形态（`tls` feature）：先握手再进同一个连接循环。
+    /// 语义与 [`serve`] 逐字一致——只有传输层换了，路由/舰队/纪律全同。
+    #[cfg(feature = "tls")]
+    pub fn serve_tls(
+        &self,
+        addr: SocketAddr,
+        config: rustls::ServerConfig,
+    ) -> io::Result<SocketAddr> {
+        let listener = TcpListener::bind(addr)?;
+        let bound = listener.local_addr()?;
+        let config = Arc::new(config);
+        let shared = Arc::clone(&self.fleet);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(sock) = stream else { continue };
+                let shared = Arc::clone(&shared);
+                let config = Arc::clone(&config);
+                std::thread::spawn(move || {
+                    let Ok(mut tls) = crate::tls::accept(&config, sock) else {
+                        return;
+                    };
+                    let _ = handle_fleet_conn(&mut tls, &shared);
+                    // 优雅关闭：TLS 要求 close_notify（见 server.rs serve_tls 注释）
+                    tls.conn.send_close_notify();
+                    let _ = std::io::Write::flush(&mut tls);
+                });
+            }
+        });
+        Ok(bound)
+    }
 }
 
-fn handle_fleet_conn(stream: &mut TcpStream, fleet: &RwLock<Fleet>) -> io::Result<()> {
+fn handle_fleet_conn<S: std::io::Read + std::io::Write>(
+    stream: &mut S,
+    fleet: &RwLock<Fleet>,
+) -> io::Result<()> {
     let (method, path, query, body) = read_request(stream)?;
     let (status, text) = route_fleet(fleet, &method, &path, &query, &body);
     let resp = format_response(status, &text);
@@ -257,6 +292,41 @@ pub(crate) fn route_fleet(
                 Err(e) => (500, format!("同步失败：{e}\n")),
             }
         }
+        ("GET", "/v1/fleet/catalog") => {
+            // 发现目录（只读）：不带 repo = 全舰队逐仓统计表（board 风格）；
+            // ?repo=X = 该仓完整手稿清单 TSV（族/条目/修正段）
+            let f = fleet.read().expect("锁中毒");
+            match query.iter().find(|(k, _)| k == "repo") {
+                None => {
+                    let mut out = String::from(
+                        "name\tfindings\tfamilies\treproduced\tadjudicated\tclaimed\tcontradictions\tverified_ratio\n",
+                    );
+                    for (name, j) in f.repos() {
+                        let cat = crate::catalog::catalog(j.dag());
+                        let st = &cat.stats;
+                        out.push_str(&format!(
+                            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.4}\n",
+                            name,
+                            st.findings,
+                            st.families,
+                            st.reproduced,
+                            st.adjudicated,
+                            st.claimed,
+                            st.contradictions,
+                            st.verified_ratio
+                        ));
+                    }
+                    (200, out)
+                }
+                Some((_, repo)) => match f.get(repo) {
+                    Some(j) => {
+                        let cat = crate::catalog::catalog(j.dag());
+                        (200, crate::catalog::export_map_tsv(&cat))
+                    }
+                    None => (404, format!("未知仓 {repo:?}\n")),
+                },
+            }
+        }
         ("GET", "/v1/fleet/coords") => {
             // 坐标台账：?repo= 可只看一仓（PROV = 裁决出处，USE = 实际用到）
             let f = fleet.read().expect("锁中毒");
@@ -385,13 +455,14 @@ pub(crate) fn route_fleet(
         }
         (m, p) if p.starts_with("/v1/fleet/") => {
             // 已知端点但方法不对 → 405；未知路径 → 404
-            const KNOWN: [&str; 15] = [
+            const KNOWN: [&str; 16] = [
                 "/v1/fleet/health",
                 "/v1/fleet/repos",
                 "/v1/fleet/board",
                 "/v1/fleet/render",
                 "/v1/fleet/attacks",
                 "/v1/fleet/links",
+                "/v1/fleet/catalog",
                 "/v1/fleet/coords",
                 "/v1/fleet/gaps",
                 "/v1/fleet/verdicts",
