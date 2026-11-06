@@ -49,6 +49,10 @@
    放行（sigscan 的 `SCAN_BUDGET`、yaraparse 的 `Unsupported`、
    mutation_check 的锚点 0 次）。
 5. **可复算**：固定种子、基线 JSON、TSV 导出——同输入必同输出。
+6. **高危测试永不进主系统**（用户指令 2026-11-07 固化）：任何攻击性
+   实验（逃逸复现/攻击验证/对抗样本）只在隔离子系统（可丢弃 VM、零
+   凭据、egress deny-by-default，规格见 AI-ATTACK-SURFACE §四）；对
+   当前运行环境不做逃逸尝试或探测。
 
 ## 三、方法论：三进制思维如何生成任务
 
@@ -121,6 +125,8 @@ Unknown？** 每找到一个就是一个任务。
 | PE32 共现 Unknown 收口 | **0** | 2026-11-07 解锁条件达成：联合测试落地（trit-re `tests/pe.rs::coff_and_cfg_jointly_attribute_pe32`——COFF 精确区间 + CFG 补隙 + 指针表种子三路同献、跨源归属、exact 保持、共现可判）；真实 mingw PE32 样本的 sha256 记录归 N1 批次 |
 | 二进制差异分析（BinDiff 式） | **0** | 解锁条件：N2 稳定后，函数签名匹配的最小子集 |
 | 符号执行集成（Kani/angr） | **-1** | 重依赖；三值抽象已覆盖同函数共现的判定需求，收益不成比例 |
+| AI 模型/智能体攻击面研究 | **+1** | 2026-11-07 综述已立（`docs/AI-ATTACK-SURFACE.md`：ATLAS/OWASP 分类 + 2025-26 沙盒逃逸态势 + CaMeL 防御映射 + 三线账本语义直接适用）；**实操 0**——解锁条件：隔离子系统建成 + 用户确认（红线一二三写死） |
+| 幽灵身份矩阵（反 Jaccard） | **+1** | 2026-11-07 可行性研究已立（`docs/GHOST-IDENTITY-RESEARCH.md`：decoy 对全局观测者反效、0 态被动化最优、基带不可接管——数学极限照实写）；下一步可做 **0 态/策略仿真器**（合成观测流 + Jaccard 分类器，纯防御侧，产出 abstention-aware RF 素材）；-1 伪造态 = 红线不做 |
 | 反编译/类型恢复（RESym 类） | **-1** | 已定案不做（SECURITY-RE §3.6）：无反编译器，LLM 路线另立门户 |
 
 ### 网络线（trit-net）
