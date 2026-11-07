@@ -198,3 +198,74 @@ fn fleet_catalog_separates_the_two_samples() {
     let _ = std::fs::remove_file(&pv);
     let _ = std::fs::remove_file(&pa);
 }
+
+#[test]
+fn fleet_poisoned_verdict_meets_human_adjudication() {
+    // MEMETIC-RESISTANCE 想法一（舰队级实验）：投毒 -1 经跨仓边遭遇
+    // 人工 +1。钉死现状语义：sync 的「变坏才落账」把 Vulnerable 视为
+    // 比 Hardened 更坏 → 覆盖人工裁决；history 保留完整序列 → 目录
+    // **Refuted 显式告警**（污染不静默）。改进想法（如实记录）：
+    // Hardened 后的跨仓落账应要求重新人工确认，而不是直接翻转。
+    let pv = temp_path("poison-vendor");
+    let mut vendor_j = Journal::create_as(&pv, "pvendor", 0).expect("建 vendor 账");
+    // 不隔离 = 污染直接可用（模拟被攻陷的 upstream）
+    let vr = intake_triage(&mut vendor_j, NodeId(0), VENDOR_JSONL, false).expect("桥 vendor");
+    assert_eq!(vr.vulnerable, 4);
+    drop(vendor_j.into_dag().expect("落盘"));
+
+    let pa = temp_path("poison-app");
+    let mut app_j = Journal::create_as(&pa, "papp", 1).expect("建 app 账");
+    let _ar = intake_triage(&mut app_j, NodeId(0), APP_JSONL, false).expect("桥 app");
+    // 人工裁决：样本节点 Hardened（人工复核确认为良性）
+    app_j
+        .record(NodeId(1), Trit::Hardened, None, "人工复核：样本确认为良性")
+        .expect("人工裁决");
+    assert_eq!(app_j.dag().node(NodeId(1)).verdict, Trit::Hardened);
+    drop(app_j.into_dag().expect("落盘"));
+
+    let mut fleet = Fleet::new();
+    fleet
+        .add("vendor", Journal::open_as(&pv, 0).expect("重开"))
+        .expect("入队");
+    fleet
+        .add("app", Journal::open_as(&pa, 1).expect("重开"))
+        .expect("入队");
+    fleet
+        .add_cross_link(
+            ("vendor", NodeId(2)), // injection 发现节点（-1）
+            ("app", NodeId(1)),    // app 样本节点（已被人工 Hardened）
+            Trit::Vulnerable,
+            "投毒跨仓边",
+        )
+        .expect("声明边");
+    let landed = fleet.sync_cross_repo("投毒演练").expect("反熵");
+    assert_eq!(landed.len(), 1, "Hardened → Vulnerable 算变坏：现状落账");
+
+    // 目录面：history = [Hardened, Vulnerable] → **Refuted 显式告警**
+    let app_dag = fleet.get("app").expect("app 在队").dag().clone();
+    assert_eq!(app_dag.node(NodeId(1)).verdict, Trit::Vulnerable);
+    let hist: Vec<Trit> = app_dag.node(NodeId(1))
+        .history
+        .iter()
+        .map(|e| e.verdict)
+        .collect();
+    assert_eq!(
+        hist,
+        vec![Trit::Unknown, Trit::Hardened, Trit::Vulnerable],
+        "0 态初始 + 人工裁决 + 污染落账——修正不删除"
+    );
+    let cat = trit_immune::catalog(&app_dag);
+    let correction = cat
+        .corrections
+        .iter()
+        .find(|x| x.node == NodeId(1))
+        .expect("修正被记录");
+    assert_eq!(
+        correction.kind,
+        trit_immune::CorrectionKind::Refuted,
+        "模因污染显式告警（想法一核心断言）"
+    );
+
+    let _ = std::fs::remove_file(&pv);
+    let _ = std::fs::remove_file(&pa);
+}
