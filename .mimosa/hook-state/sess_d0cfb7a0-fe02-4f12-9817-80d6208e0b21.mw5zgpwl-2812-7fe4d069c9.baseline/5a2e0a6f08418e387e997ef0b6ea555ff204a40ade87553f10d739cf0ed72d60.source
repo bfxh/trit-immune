@@ -41,6 +41,21 @@ def block_for(target: pathlib.Path) -> str:
     )
 
 
+# 写进 Cargo.toml 的路径字符集闸：白名单外（引号/注释符/换行/控制符等
+# TOML 元字符与注入面）一律在源头拒绝。cmd_lock 同款形状——闸门放在
+# 污点值与 sink 之间，引擎与人都可复算。
+_PATH_SAFE = re.compile(r"[\w\-./ :()+@\[\]]+")
+
+
+def gate_dep_path(dep_path: str) -> bool:
+    return bool(_PATH_SAFE.fullmatch(dep_path))
+
+
+# --precise 只接受 commit SHA 形状（十六进制 7..64 位）——argv 到
+# cargo 参数的值域收口。
+_SHA_SAFE = re.compile(r"[0-9a-fA-F]{7,64}")
+
+
 def splice(text: str, block: str) -> str:
     if START in text and END in text:
         head, _, rest = text.partition(START)
@@ -101,6 +116,19 @@ def restore_backup() -> bool:
 
 
 def link(target: pathlib.Path) -> int:
+    target = target.resolve()
+    # 包含校验：目标必须落在当前工作区内——CLI 路径参数不逃逸出本仓
+    # （路径形状的闸门：逃逸路径在污点引擎眼里就是穿越入口）。
+    if not target.is_relative_to(pathlib.Path.cwd().resolve()):
+        print(f"拒绝：--to 必须落在当前工作区内（防路径逃逸）：{target}")
+        return 2
+    dep_path = (target / "crates" / DEP).as_posix()
+    # 字符集闸：真正写进 Cargo.toml 的只有 dep_path 这个派生串——
+    # 白名单外的值（TOML 引号/注释符/换行/控制符）在源头拒绝，
+    # 不给跨文件注入留任何形状。
+    if not gate_dep_path(dep_path):
+        print(f"拒绝：路径含白名单外字符（TOML 注入面）：{dep_path}")
+        return 2
     if not (target / "crates" / DEP / "Cargo.toml").is_file():
         print(f"目标里找不到 crates/{DEP}/Cargo.toml：{target}")
         return 2
@@ -154,6 +182,10 @@ def status() -> int:
 def bump(precise: str) -> int:
     args = ["update", "-p", DEP]
     if precise:
+        # SHA 形状闸：非十六进制形状的 --precise 在源头拒绝
+        if not _SHA_SAFE.fullmatch(precise):
+            print(f"拒绝：--precise 需要 commit SHA 形状（十六进制 7..64 位）：{precise}")
+            return 2
         args += ["--precise", precise]
     result = cargo(args)
     if result.returncode != 0:
@@ -191,6 +223,15 @@ def self_test() -> int:
     check("解析锁定 commit", pinned_commit(lock), "bfc6f80106a4")
     check("非 git 源解析为空", pinned_commit('name = "x"\nversion = "1"\nsource = "registry+x"\n'), "")
 
+    # 字符集闸：TOML 注入面在源头拒绝（引号/注释/换行/控制符），普通路径放行
+    check("闸放行普通路径", gate_dep_path("/repo/trit/crates/trit-core"), True)
+    check("闸放行带空格盘符", gate_dep_path("D:/KF trit/crates/trit-core"), True)
+    check("闸拒引号", gate_dep_path('/repo"愚/ crate'), False)
+    check("闸拒注释符", gate_dep_path("/repo/trit#crates"), False)
+    check("闸拒换行", gate_dep_path("/repo/trit\ncrates"), False)
+    check("SHA 闸放行", bool(_SHA_SAFE.fullmatch("bfc6f80106a4")), True)
+    check("SHA 闸拒非 SHA", bool(_SHA_SAFE.fullmatch("not-a-sha!")), False)
+
     import tempfile
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -227,7 +268,7 @@ def main(argv: list[str]) -> int:
     if command == "status":
         return status()
     if command == "link":
-        if "--to" not in argv:
+        if "--to" not in argv or argv.index("--to") + 1 >= len(argv):
             print("用法：pin.py link --to <单体仓路径>")
             return 2
         return link(pathlib.Path(argv[argv.index("--to") + 1]).resolve())

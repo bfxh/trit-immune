@@ -627,59 +627,68 @@ fn cmd_sync_git(args: &[String]) -> Result<(), CliError> {
     Ok(())
 }
 
-/// `trit lock <Cargo.lock> [-f file] [--build-from <feature 清单文件>]`：**依赖坐标入账**。
+/// `trit lock [-f file] [--build <feature,feature>]`：**依赖坐标入账**，
+/// **Cargo.lock 从 stdin 读入**（管线式 `cargo generate-lockfile | trit lock`）
+/// ——外部文件内容不经 CLI 路径参数，path-traversal 面从入口消失
+/// （ROADMAP #49 出口面的第五轮修复：引擎认不出围栏形状，就移除污点路径本身）。
 ///
 /// 把本项目锁文件里实际解析到的每个依赖，立成账本中的坐标节点（**0 态**——
 /// 外部事实入账，未验证不算安全），并连一条"消费 → 本仓根"的边，让库被打穿时
 /// 本仓的门禁与有效裁决直接看见。`Cargo.lock` 不记 feature 集；要把同 checksum
-/// 不同 feature 的产物分开，用 `--build-from` 指向一个 feature 清单文件
-/// （内容为逗号/空格分隔的 feature 名，做指纹）。**不收命令行自由文本**：
-/// 指纹会写进账本行，字符集在文件读入后同样校验，其余一律拒绝。
+/// 不同 feature 的产物分开，用 `--build` 内联清单（逗号分隔 feature 名）。
+/// **自由文本不进账本**：字符集闸（字母数字 `_ - . +`）+ delta 转义双消毒。
 /// 幂等：同坐标再跑不重复建节点。
 fn cmd_lock(args: &[String]) -> Result<(), CliError> {
-    // 参数惯例与 merge / sync-git 一致：位置参数在前、`-f` 在后也要认。
-    // 只走 split_ledger（认首位 `-f`）会把账本静默换成默认名——坐标写进别的文件。
+    let mut text = String::new();
+    io::Read::read_to_string(&mut io::stdin(), &mut text)
+        .map_err(|e| CliError::Runtime(format!("读 stdin 失败：{e}")))?;
+    lock_from(args, &text)
+}
+
+/// lock 的实现体（stdin 文本由 [`cmd_lock`] 注入，测试可直接喂）。
+fn lock_from(args: &[String], lock_text: &str) -> Result<(), CliError> {
+    // 参数惯例与 merge / sync-git 一致：`-f` 在前后都要认。
     let mut path = PathBuf::from(DEFAULT_LEDGER);
-    let mut build_from: Option<String> = None;
-    let mut lock_arg: Option<String> = None;
+    let mut build: Option<String> = None;
     let mut i = 0usize;
     while i < args.len() {
         match args[i].as_str() {
             "-f" => {
-                let v = args
-                    .get(i + 1)
-                    .ok_or_else(|| CliError::Usage("-f 需要跟一个文件".into()))?;
-                path = PathBuf::from(v);
+                path = PathBuf::from(
+                    args.get(i + 1)
+                        .ok_or_else(|| CliError::Usage("-f 需要跟一个文件".into()))?,
+                );
                 i += 2;
             }
-            "--build-from" => {
-                let v = args
-                    .get(i + 1)
-                    .ok_or_else(|| CliError::Usage("--build-from 需要跟一个文件".into()))?;
-                build_from = Some(v.clone());
+            "--build" => {
+                build = Some(
+                    args.get(i + 1)
+                        .ok_or_else(|| CliError::Usage("--build 需要跟 feature 清单".into()))?
+                        .clone(),
+                );
                 i += 2;
             }
-            other if other.starts_with('-') => i += 1,
+            // 未知参数一律判红，不静默跳过（#7 的纪律）：老写法
+            // `lock Cargo.lock --build std` 若被静默跳过、值当位置参数吞掉，
+            // 指纹会悄悄丢失，坐标只锁到 checksum 这一层，而调用方以为
+            // 自己要的 feature 区分生效了。stdin 口径下位置参数同样不收——
+            // Cargo.lock 只从 stdin 来。
+            other if other.starts_with('-') => {
+                return Err(CliError::Usage(format!(
+                    "lock 不认识参数 {other}（旧口径 `lock <Cargo.lock> [--build-from <文件>]` 已改为 stdin：Cargo.lock 从标准输入读入，feature 清单用 --build <逗号分隔>）"
+                )));
+            }
             other => {
-                if lock_arg.is_none() {
-                    lock_arg = Some(other.to_string());
-                }
-                i += 1;
+                return Err(CliError::Usage(format!(
+                    "lock 不接受位置参数 {other:?}（旧口径 `lock <Cargo.lock> [--build-from <文件>]` 已改为 stdin：Cargo.lock 从标准输入读入，feature 清单用 --build <逗号分隔>，例如 `cargo generate-lockfile | trit lock`）"
+                )));
             }
         }
     }
-    let lock_arg = lock_arg.ok_or_else(|| CliError::Usage("lock 需要 <Cargo.lock>".into()))?;
-    let lock_arg = fence_ledger_path(std::path::Path::new(&lock_arg))?;
-    let text = std::fs::read_to_string(&lock_arg)
-        .map_err(|e| CliError::Runtime(format!("读 {} 失败：{e}", lock_arg.display())))?;
-    let pins = supply::parse_lock(&text);
-    let build = match build_from {
-        Some(file) => {
-            let file = fence_ledger_path(std::path::Path::new(&file))?;
-            let raw = std::fs::read_to_string(&file)
-                .map_err(|e| CliError::Runtime(format!("读 {} 失败：{e}", file.display())))?;
-            // 指纹写进账本行（文件内容）：逗号/空白分隔的 feature 名，
-            // 只放行 feature 名字符，其余一律拒绝——自由文本不进账本。
+    // 指纹写进账本行：逗号/空白分隔的 feature 名，只放行 feature 名字符，
+    // 其余一律拒绝——自由文本不进账本（字符集闸 + delta 转义双消毒）。
+    let build = build
+        .map(|raw| -> Result<String, CliError> {
             let fingerprint = raw
                 .split(|c: char| c == ',' || c.is_whitespace())
                 .map(str::trim)
@@ -692,16 +701,16 @@ fn cmd_lock(args: &[String]) -> Result<(), CliError> {
                     .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | ',' | '.' | '+'))
             {
                 return Err(CliError::Usage(format!(
-                    "--build-from 的 feature 清单只接受 feature 名字符（字母数字 _ - . +，逗号分隔），收到：{fingerprint}"
+                    "--build 的 feature 清单只接受 feature 名字符（字母数字 _ - . +，逗号分隔），收到：{fingerprint}"
                 )));
             }
-            Some(fingerprint)
-        }
-        None => None,
-    };
+            Ok(fingerprint)
+        })
+        .transpose()?;
     let path = fence_ledger_path(&path)?;
     let mut j = Journal::open_as(&path, 0)
         .map_err(|e| CliError::Runtime(format!("打开账本 {} 失败：{e}", path.display())))?;
+    let pins = supply::parse_lock(lock_text);
     let report = coords::attach_pins(&mut j, &pins, build.as_deref())
         .map_err(|e| CliError::Runtime(format!("坐标入账失败：{e}")))?;
     println!(
@@ -738,8 +747,8 @@ fn help_text() -> String {
                             trit-re 台账桥：逆向发现吃进裁决账本
   sync-git <repo> [-f file] [--open]
                             git 共存桥：提交历史吸收进账本（0 态+默认隔离）
-  lock <Cargo.lock> [-f file] [--build-from <feature 清单文件>]
-                            依赖坐标入账：本项目实际解析到哪个库产物（幂等）
+  lock [-f file] [--build <feature,feature>]
+                            依赖坐标入账（Cargo.lock 从 stdin 读，幂等）
   help                      本帮助
 
 默认账本：当前目录 repo.tritj（-f 可指定）。"
@@ -942,26 +951,48 @@ mod tests {
     }
 
     #[test]
-    fn lock_accepts_ledger_option_after_positional_argument() {
-        // 文档口径是 `lock <Cargo.lock> [-f file]`：`-f` 排在位置参数之后也必须生效，
+    fn lock_reads_cargo_lock_from_stdin() {
+        // 新口径 `lock [-f file] [--build features]`：Cargo.lock 从 stdin 读入
+        //（path-traversal 面从入口消失）；`-f` 排在参数任意位置都必须生效，
         // 否则坐标静默写进默认账本——同一命令行写到了另一个文件。
         let dir = tmpdir("lock-opt");
         run(&[s("init"), s(dir.to_string_lossy().to_string())]).unwrap();
         let ledger = dir.join(DEFAULT_LEDGER);
-        let lockfile = dir.join("Cargo.lock");
-        fs::write(
-            &lockfile,
-            "[[package]]\nname = \"shared-lib\"\nversion = \"1.2.0\"\nchecksum = \"aaa\"\n",
-        )
-        .unwrap();
+        let lock_text =
+            "[[package]]\nname = \"shared-lib\"\nversion = \"1.2.0\"\nchecksum = \"aaa\"\n";
 
-        run(&[
-            s("lock"),
-            s(lockfile.to_string_lossy().to_string()),
-            s("-f"),
-            s(ledger.to_string_lossy().to_string()),
-        ])
-        .expect("lock 应接受位置参数之后的 -f");
+        lock_from(
+            &[s("-f"), s(ledger.to_string_lossy().to_string())],
+            lock_text,
+        )
+        .expect("lock 应接受 -f（Cargo.lock 走 stdin）");
+
+        // --build 内联清单：字符集闸放行合法名，拒绝非法字符
+        lock_from(
+            &[
+                s("-f"),
+                s(ledger.to_string_lossy().to_string()),
+                s("--build"),
+                s("serde_json,git2"),
+            ],
+            lock_text,
+        )
+        .expect("合法 feature 清单");
+        assert!(
+            matches!(
+                lock_from(
+                    &[
+                        s("-f"),
+                        s(ledger.to_string_lossy().to_string()),
+                        s("--build"),
+                        s("a;b")
+                    ],
+                    lock_text
+                ),
+                Err(CliError::Usage(_))
+            ),
+            "分号不在 feature 名字符集内——自由文本不进账本"
+        );
 
         let j = Journal::open_as(&ledger, 0).unwrap();
         let titles: Vec<String> = j
@@ -973,10 +1004,83 @@ mod tests {
             .collect();
         assert_eq!(
             titles.len(),
-            1,
-            "坐标节点必须落在 -f 指定的账本里：{titles:?}"
+            2,
+            "无 build 与 --build=serde_json,git2 是两个坐标（逐字段相等才同坐标，by design）；非法字符集调用没建任何节点：{titles:?}"
+        );
+        assert!(
+            titles.iter().any(|t| t.ends_with("|-")),
+            "无 build 坐标在案"
+        );
+        assert!(
+            titles.iter().any(|t| t.ends_with("serde_json,git2")),
+            "带 build 坐标在案"
         );
         drop(j.into_dag().unwrap());
         fs::remove_dir_all(&dir).unwrap();
     }
+
+    #[test]
+    fn lock_rejects_unknown_flags_instead_of_dropping_the_fingerprint() {
+        // 旧口径 `--build <自由文本>` 已废。老解析循环是「不认识的旗标跳过、它的值当位置参数」
+        // ⇒ 传了 `--build serde,derive` 会被静默丢弃，坐标只锁到 checksum 这一层，
+        // 而调用方以为自己要的 feature 区分生效了。这比报错糟，必须判红。
+        let dir = tmpdir("lock-unknown-flag");
+        run(&[s("init"), s(dir.to_string_lossy().to_string())]).unwrap();
+        let lockfile = dir.join("Cargo.lock");
+        fs::write(
+            &lockfile,
+            "[[package]]\nname = \"shared-lib\"\nversion = \"1.2.0\"\nchecksum = \"aaa\"\n",
+        )
+        .unwrap();
+        let outcome = run(&[
+            s("lock"),
+            s(lockfile.to_string_lossy().to_string()),
+            s("-f"),
+            s(dir.join(DEFAULT_LEDGER).to_string_lossy().to_string()),
+            s("--build"),
+            s("serde,derive"),
+        ]);
+        // 判红本身不够——还必须是**能照着改**的判红：错误里要点名是哪一枚旗标，
+        // 并给出新旧口径的对应关系。否则「随便回一句 unknown」也能过这条断言，
+        // 而用户照样不知道自己把哪个参数写废了。
+        let err = match outcome {
+            Err(CliError::Usage(message)) => message,
+            other => panic!("未知旗标必须 Usage 判红，实际：{other:?}"),
+        };
+        assert!(err.contains("--build"), "错误没点名是哪一枚旗标：{err}");
+        assert!(
+            err.contains("--build-from"),
+            "错误没给新旧口径的对应关系，用户无法照做：{err}"
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn lock_refuses_non_feature_characters_before_writing_the_ledger() {
+        // 指纹是写进账本行的内容：字符集外的东西（这里放一个 '#'）一律拒，
+        // 且必须**在落账之前**拒——判红之后账本一个字节都不许多。
+        let dir = tmpdir("lock-bad-build");
+        run(&[s("init"), s(dir.to_string_lossy().to_string())]).unwrap();
+        let ledger = dir.join(DEFAULT_LEDGER);
+        let before = fs::read_to_string(&ledger).unwrap_or_default();
+        let outcome = run(&[
+            s("lock"),
+            s("-f"),
+            s(ledger.to_string_lossy().to_string()),
+            s("--build"),
+            s("serde,#evil"),
+        ]);
+        assert!(matches!(outcome, Err(CliError::Usage(_))), "{outcome:?}");
+        assert_eq!(
+            fs::read_to_string(&ledger).unwrap_or_default(),
+            before,
+            "判红不该留下半条账本"
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // 旧口径 `--build-from <feature 清单文件>` 的测试已随 stdin 重设计移除：
+    // feature 清单走 `--build <逗号分隔>` 内联（字符集闸不变，
+    // 逗号/空白混合分隔的规范化行为由 lock_reads_cargo_lock_from_stdin 覆盖），
+    // 外部文件路径参数不再存在——path-traversal 面从入口消失。
 }
