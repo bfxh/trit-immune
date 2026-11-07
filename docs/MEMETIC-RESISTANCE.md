@@ -91,10 +91,13 @@ Reproduced/Adjudicated 或降级清除。`verified_ratio`（已验证比例）= 
 
 ## 六、可做实验（全部纯防御侧）
 
-1. **B 检测实验**：合成账本——注入 k 个伪造 -1 经跨仓边传播，统计 B
-   出现率与传播深度（现有 retbridge_fleet 夹具可改造）；
-2. **scrubbing 曲线**：verified_ratio 时间序列对注入速率的敏感性（本地
-   即可仿真）；
+1. **B 检测实验**：✅ 已落地为代码（retbridge four=B 矛盾告警计数，2026-11-08
+   feccc11——合成 JSONL：B 行 conflicted=1、F 行照常 -1、值映射照常）；
+2. **scrubbing 曲线**：✅ 仿真落地（`scripts/scrub_sim.py`，确定性种子）——
+   **定量律实证：verified_ratio 平台 = min(1, C/P)**（C = 复核容量，
+   P = 注入速率）；超容量注入从平台值**精确反解 P_est**（C=8：P=10 →
+   估 10.5、P=15 → 估 15.5）；**容量内注入被吸收不可见**——诚实边界：
+   比率信号抓泛滥、B 告警抓定向注入，**两信号分工**（单一信号不完整）；
 3. **裁决 TMR**：yara-python + trit-re + 第三个引擎对同批样本三票表决，
    量测单引擎投毒被压制的比率（N4 对拍基建直接复用）。
 
