@@ -244,7 +244,8 @@ fn fleet_poisoned_verdict_meets_human_adjudication() {
     // 目录面：history = [Hardened, Vulnerable] → **Refuted 显式告警**
     let app_dag = fleet.get("app").expect("app 在队").dag().clone();
     assert_eq!(app_dag.node(NodeId(1)).verdict, Trit::Vulnerable);
-    let hist: Vec<Trit> = app_dag.node(NodeId(1))
+    let hist: Vec<Trit> = app_dag
+        .node(NodeId(1))
         .history
         .iter()
         .map(|e| e.verdict)

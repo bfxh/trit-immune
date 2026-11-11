@@ -459,8 +459,7 @@ mod tests {
             packed_node
                 .history
                 .iter()
-                .any(|e| e.note.contains("four=B")
-                    && e.note.contains("签名但结构像加壳")),
+                .any(|e| e.note.contains("four=B") && e.note.contains("签名但结构像加壳")),
             "B 判定的 history 事件带 four 标记与原始 title"
         );
         drop(j.into_dag().expect("落盘"));
