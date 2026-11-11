@@ -470,6 +470,85 @@ impl Fleet {
         Ok(results)
     }
 
+    /// **多源 TMR 同步**（MEMETIC-RESISTANCE 想法三的舰队形态）：
+    /// 同一目标节点的所有跨仓票**先收集后表决**——
+    /// - 目标已 `Hardened`（人工裁决）→ **跳过**（人工裁决受保护——
+    ///   舰队实验记录的改进想法落地：污染不再直接翻转人工裁决）；
+    /// - ≥2 源一致 `Vulnerable` → 落 `-1`（佐证成立）；
+    /// - 仅 1 源 `Vulnerable` → 落 `Unknown`（单源声称降权——投毒抑制面）；
+    /// - 0 源 `Vulnerable` → 跳过（没看见不构成变更）。
+    ///
+    /// 与 [`Self::sync_cross_repo`] 的差异：后者逐链落账（单链 -1 直接
+    /// 穿透——多源场景下单引擎污染无法被否决）；本方法**先收集后表决**。
+    pub fn tmr_sync_cross_repo(&mut self, note: &str) -> io::Result<Vec<CrossRepoDelta>> {
+        type Plan = Vec<((String, NodeId), (String, NodeId), Trit)>;
+        let mut plan: Plan = Vec::new();
+        for link in &self.cross_links {
+            let Some(src) = self.get(&link.from.0) else {
+                continue;
+            };
+            let src_dag = src.dag();
+            if link.from.1 .0 as usize >= src_dag.nodes().len() {
+                continue;
+            }
+            let sv = src_dag.node(link.from.1).verdict;
+            let out = sv.max(link.pass);
+            if out == Trit::Hardened {
+                continue; // +1 永不跨仓
+            }
+            let Some(dst) = self.get(&link.to.0) else {
+                continue;
+            };
+            if link.to.1 .0 as usize >= dst.dag().nodes().len() {
+                continue;
+            }
+            plan.push((link.from.clone(), link.to.clone(), out));
+        }
+        // 阶段 2：按目标分组（同目标的所有票一起看）
+        let mut by_target: BTreeMap<(String, NodeId), (Vec<(String, NodeId)>, usize)> =
+            BTreeMap::new();
+        for (from, to, out) in plan {
+            let entry = by_target.entry(to.clone()).or_default();
+            entry.0.push(from);
+            if out == Trit::Vulnerable {
+                entry.1 += 1;
+            }
+        }
+        // 阶段 3：表决落账
+        let mut results = Vec::with_capacity(by_target.len());
+        for ((to_repo, to_node), (sources, v_count)) in by_target {
+            let Some(j) = self.get_mut(&to_repo) else {
+                continue;
+            };
+            // 人工裁决受保护（改进想法落地）：Hardened 目标不跨仓翻转
+            if j.dag().node(to_node).verdict == Trit::Hardened {
+                continue;
+            }
+            let verdict = if v_count >= 2 {
+                Trit::Vulnerable // 佐证成立
+            } else if v_count == 1 {
+                Trit::Unknown // 单源声称降权（投毒抑制面）
+            } else {
+                continue; // 没看见不构成变更
+            };
+            let source_list: Vec<String> = sources
+                .iter()
+                .map(|s| format!("{}:{}", s.0, s.1 .0))
+                .collect();
+            let full_note = format!("{note} TMR← {}（v_count={v_count}）", source_list.join(","));
+            j.record(to_node, verdict, None, &full_note)
+                .map_err(io::Error::other)?;
+            for from in sources {
+                results.push(CrossRepoDelta {
+                    from,
+                    to: (to_repo.clone(), to_node),
+                    verdict,
+                });
+            }
+        }
+        Ok(results)
+    }
+
     /// **多跳攻击链枚举**（fleet 级渗透路径报告）——实现已拆至
     /// [`crate::attack`]（上游 module budget：单文件 ≤800 行），此处薄委托
     /// 保持方法路径。语义见 [`crate::attack`] 模块文档。
