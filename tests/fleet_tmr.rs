@@ -12,12 +12,6 @@ const VENDOR_JSONL: &str = concat!(
     r#"{"kind":"judgment","sha256":"tmr-vendor-sample","id":"injection","title":"注入","value":"true","four":"T","support":["imports.inj.alloc"],"refute":[],"unknown":[]}"#,
 );
 
-fn poisoned_journal(path: &std::path::Path, tag: &str) -> Journal {
-    let mut j = Journal::create_as(path, tag, 0).expect("建账");
-    intake_triage(&mut j, NodeId(0), VENDOR_JSONL, false).expect("桥 vendor");
-    j
-}
-
 fn temp_path(tag: &str) -> std::path::PathBuf {
     static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);

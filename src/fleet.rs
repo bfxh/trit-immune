@@ -505,8 +505,8 @@ impl Fleet {
             plan.push((link.from.clone(), link.to.clone(), out));
         }
         // 阶段 2：按目标分组（同目标的所有票一起看）
-        let mut by_target: BTreeMap<(String, NodeId), (Vec<(String, NodeId)>, usize)> =
-            BTreeMap::new();
+        type TmrTargetVote = (Vec<(String, NodeId)>, usize);
+        let mut by_target: BTreeMap<(String, NodeId), TmrTargetVote> = BTreeMap::new();
         for (from, to, out) in plan {
             let entry = by_target.entry(to.clone()).or_default();
             entry.0.push(from);
