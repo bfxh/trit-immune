@@ -532,7 +532,7 @@ fn cmd_triage_bridge(args: &[String]) -> Result<(), CliError> {
         .map_err(|e| CliError::Runtime(e.to_string()))?;
     drop(j.into_dag().map_err(|e| CliError::Runtime(e.to_string()))?);
     println!(
-        "台账桥：样本 {}，发现 {}（-1 {} / 0 {}），False 不入账 {}，坏行 {}，隔离 {} → {}",
+        "台账桥：样本 {}，发现 {}（-1 {} / 0 {}），False 不入账 {}，坏行 {}，隔离 {}，矛盾告警 {} → {}",
         report.samples,
         report.findings,
         report.vulnerable,
@@ -540,6 +540,7 @@ fn cmd_triage_bridge(args: &[String]) -> Result<(), CliError> {
         report.skipped_false,
         report.bad_lines,
         report.quarantined,
+        report.conflicted,
         ledger_path.display()
     );
     Ok(())

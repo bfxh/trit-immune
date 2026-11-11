@@ -1,0 +1,83 @@
+{
+  "schemaVersion": "mimosa-finding-ledger-batch/v1",
+  "batchId": "stop-20261111T164954719Z-25540-7096f8839ed7",
+  "runId": "20261111T164954719Z-25540-7096f8839ed7",
+  "runStatus": "inconclusive",
+  "coverage": {
+    "status": "partial",
+    "reasons": [
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": "src/tmr.rs",
+        "detail": "file is missing from task baseline",
+        "affectsCompletion": true
+      },
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": "scripts/tmr_vote.py",
+        "detail": "file is missing from task baseline",
+        "affectsCompletion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": "src/tmr.rs",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affectsCompletion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": "scripts/tmr_vote.py",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affectsCompletion": true
+      }
+    ]
+  },
+  "source": {
+    "component": "zcode-hook",
+    "operationId": "Stop"
+  },
+  "revision": "937660abb0c9c4f09b3dabc5e7a5d6184d4ec5f8",
+  "diffHash": "9068b71dd5dedd9ea58c968bd708babea4c26defcfc862be4945ade21be87f49",
+  "rulesVersion": "unavailable",
+  "sessionHash": "d989745aea1dbd7d675d1d294fada20cae166405c84cabe1d4ac6c739d8debfa",
+  "reportRef": ".mimosa/reports/task-review-sess_d0cfb7a0-fe02-4f12-9817-80d6208e0b21-20261111T164954719Z-25540-7096f8839ed7.json",
+  "events": [],
+  "observedFindingIds": [],
+  "verifiedFiles": [
+    {
+      "file": "src/retbridge.rs",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "src/bin/trit.rs",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "scripts/scrub_sim.py",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "tests/retbridge_fleet.rs",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "src/tmr.rs",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "scripts/tmr_vote.py",
+      "direct": "complete",
+      "projectContext": "partial"
+    }
+  ],
+  "recordedAt": "2026-11-11T16:49:54.989Z"
+}

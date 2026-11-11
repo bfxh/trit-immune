@@ -74,6 +74,205 @@ pub struct TriageIntakeReport {
     pub conflicted: usize,
 }
 
+/// 三源 TMR 桥的反污染报告（MEMETIC-RESISTANCE 想法三的管线形态）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TmrIntakeReport {
+    /// `file` 行立的样本节点数（三源并集）。
+    pub samples: usize,
+    /// TMR 表决落账的发现数。
+    pub findings: usize,
+    /// **佐证成立**（≥2 源一致 true → `-1`）数。
+    pub corroborated: usize,
+    /// **单源声称被降级**（仅 1 源 true → `0` + 注记）数——投毒抑制面。
+    pub suppressed_single: usize,
+    /// 全源 `unknown`（没看见）数。
+    pub unknown: usize,
+    /// four=B 矛盾告警数（任一源携带即计）。
+    pub conflicted: usize,
+    /// 非法 JSONL 行数（如实计数不中断）。
+    pub bad_lines: usize,
+}
+
+/// 值映射（投票口径）：true → Vulnerable 声称；unknown → Unknown 声称；
+/// false → **弃权**（扫描器没看见不构成票）。
+fn vote_of(value: &str) -> Option<Trit> {
+    match value {
+        "true" => Some(Trit::Vulnerable),
+        "unknown" => Some(Trit::Unknown),
+        _ => None,
+    }
+}
+
+/// **三源 TMR 桥**：三份独立 trit-re JSONL（三个扫描器），按
+/// `(sha256, 判定 id)` 配对后 TMR 表决入账。
+///
+/// 反污染纪律（MEMETIC-RESISTANCE 想法三的管线形态）：
+/// - **≥2 源一致 true → `-1`**（佐证成立——单引擎声称无法独立入账）；
+/// - 仅 1 源 true → **降级为 `0` + 注记**（投毒抑制面：单源 -1 声称
+///   无佐证即降权）；
+/// - 全源 `unknown` → `0`（没看见）；全源弃权 → 不入账；
+/// - 任一源 `four=B` → 矛盾告警计数（想法一联动）。
+pub fn tmr_intake_triage(
+    journal: &mut Journal,
+    parent: NodeId,
+    jsonl_texts: [&str; 3],
+    quarantine: bool,
+) -> io::Result<TmrIntakeReport> {
+    let mut report = TmrIntakeReport::default();
+    let mut sample_of: std::collections::BTreeMap<String, NodeId> =
+        std::collections::BTreeMap::new();
+    let mut deferred: Vec<(String, JudgmentRow)> = Vec::new();
+
+    for text in jsonl_texts {
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let parsed = match crate::json::parse(line) {
+                Ok(j) => j,
+                Err(_) => {
+                    report.bad_lines += 1;
+                    continue;
+                }
+            };
+            match parsed.get("kind").and_then(|v| v.as_str()) {
+                Some("file") => {
+                    let sha = parsed
+                        .get("sha256")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    if sha.is_empty() || sample_of.contains_key(&sha) {
+                        continue;
+                    }
+                    let node = journal
+                        .spawn(
+                            parent,
+                            NodeKind::Message,
+                            &format!("trit-re 样本 {}", &sha[..16.min(sha.len())]),
+                        )
+                        .map_err(|e| io::Error::other(e.to_string()))?;
+                    journal
+                        .record(
+                            node,
+                            Trit::Unknown,
+                            None,
+                            &format!("trit-re:<{sha}> 样本身份（0 态：外部输入未测不可信）"),
+                        )
+                        .map_err(|e| io::Error::other(e.to_string()))?;
+                    report.samples += 1;
+                    sample_of.insert(sha, node);
+                }
+                Some("judgment") => match JudgmentRow::from_json(&parsed) {
+                    Some(row) => deferred.push((row.sha.clone(), row)),
+                    None => report.bad_lines += 1,
+                },
+                _ => {}
+            }
+        }
+    }
+
+    // 按 (sha, id) 配对三源判定
+    let mut paired: std::collections::BTreeMap<(String, String), Vec<JudgmentRow>> =
+        std::collections::BTreeMap::new();
+    for (sha, row) in deferred {
+        paired.entry((sha, row.id.clone())).or_default().push(row);
+    }
+
+    // 隔离（外部输入自动检疫，与 intake_triage 同纪律）
+    if quarantine {
+        let to_quarantine: Vec<NodeId> = journal
+            .dag()
+            .nodes()
+            .iter()
+            .filter(|n| {
+                n.id != parent
+                    && !n.quarantined
+                    && n.verdict != Trit::Hardened
+                    && n.parent == Some(parent)
+            })
+            .map(|n| n.id)
+            .collect();
+        for id in to_quarantine {
+            journal
+                .quarantine(id, "外部逆向台账自动隔离（tmr-bridge 管线）")
+                .map_err(|e| io::Error::other(e.to_string()))?;
+        }
+    }
+
+    // TMR 表决落账（按 key 稳定序——台账行可复算）
+    for ((sha, id), rows) in paired {
+        let votes: Vec<Trit> = rows.iter().filter_map(|r| vote_of(&r.value)).collect();
+        let v_count = votes.iter().filter(|v| **v == Trit::Vulnerable).count();
+        let u_count = votes.iter().filter(|v| **v == Trit::Unknown).count();
+        let sample = match sample_of.get(&sha) {
+            Some(s) => *s,
+            None => {
+                // 乱序防御：judgment 先于 file 行时样本节点按需立
+                let node = journal
+                    .spawn(parent, NodeKind::Message, &format!("trit-re 样本 {sha}"))
+                    .map_err(|e| io::Error::other(e.to_string()))?;
+                journal
+                    .record(
+                        node,
+                        Trit::Unknown,
+                        None,
+                        &format!("trit-re:<{sha}> 样本身份（0 态：外部输入未测不可信）"),
+                    )
+                    .map_err(|e| io::Error::other(e.to_string()))?;
+                report.samples += 1;
+                sample_of.insert(sha.clone(), node);
+                *sample_of.get(&sha).expect("刚插入")
+            }
+        };
+
+        let verdict = if v_count >= 2 {
+            report.corroborated += 1;
+            Trit::Vulnerable // ≥2 源佐证：-1 成立
+        } else if v_count == 1 {
+            report.suppressed_single += 1;
+            Trit::Unknown // 单源声称：降权为 0 + 注记（投毒抑制面）
+        } else if u_count >= 1 {
+            report.unknown += 1;
+            Trit::Unknown // 全源没看见
+        } else {
+            continue; // 全源弃权（false）：不入账
+        };
+
+        let node = journal
+            .spawn(sample, NodeKind::Message, &format!("trit-re 判定: {id}"))
+            .map_err(|e| io::Error::other(e.to_string()))?;
+        let votes_note: Vec<String> = rows
+            .iter()
+            .map(|r| format!("{}={}", r.value, r.four))
+            .collect();
+        let conflicted = rows.iter().any(|r| r.four.eq_ignore_ascii_case("B"));
+        if conflicted {
+            report.conflicted += 1;
+        }
+        let note = format!(
+            "trit-re:<{sha}> TMR{} v_count={v_count} 票=[{}]{}",
+            if v_count >= 2 {
+                " 佐证"
+            } else {
+                " 单源降权"
+            },
+            votes_note.join(" / "),
+            if conflicted {
+                " ⚠ four=B 矛盾告警"
+            } else {
+                ""
+            },
+        );
+        journal
+            .record(node, verdict, None, &note)
+            .map_err(|e| io::Error::other(e.to_string()))?;
+        report.findings += 1;
+    }
+    Ok(report)
+}
+
 /// 把 trit-re 的 JSONL 台账吃进账本：`parent` 下立样本节点（`file` 行），
 /// `judgment` 行按三值对齐表入账，外部输入自动隔离。
 pub fn intake_triage(
@@ -248,7 +447,7 @@ fn is_within_subtree(dag: &crate::dag::ImmuneDag, id: NodeId, root: NodeId) -> b
     false
 }
 
-struct JudgmentRow {
+pub(crate) struct JudgmentRow {
     sha: String,
     id: String,
     title: String,
@@ -260,7 +459,7 @@ struct JudgmentRow {
 }
 
 impl JudgmentRow {
-    fn from_json(json: &Json) -> Option<Self> {
+    pub(crate) fn from_json(json: &Json) -> Option<Self> {
         let sha = json.get("sha256")?.as_str()?.to_string();
         let id = json.get("id")?.as_str()?.to_string();
         let title = json.get("title")?.as_str()?.to_string();
@@ -510,6 +709,71 @@ mod tests {
             assert_eq!(live.verdict, back.verdict);
             assert_eq!(live.quarantined, back.quarantined);
         }
+        let _ = std::fs::remove_file(&path);
+    }
+    #[test]
+    #[test]
+    fn tmr_bridge_corroborated_vs_suppressed() {
+        // MEMETIC-RESISTANCE 想法三（管线形态）：三源 TMR 桥——
+        // >=2 源一致 true → -1（佐证成立）；单源 true → 降级 0 + 注记。
+        let (mut j, path) = temp_journal("tmr");
+        let jrow = |sha: &str, value: &str, four: &str| {
+            format!(
+                r#"{{"kind":"judgment","sha256":"{sha}","id":"injection","title":"判定","value":"{value}","four":"{four}","support":[],"refute":[],"unknown":[]}}"#
+            )
+        };
+        let s1 = "aa01";
+        let s2 = "bb02";
+        let j1 = format!("{}\n{}", jrow(s1, "true", "F"), jrow(s2, "true", "F"));
+        let j2 = format!("{}\n{}", jrow(s1, "true", "F"), jrow(s2, "false", "F"));
+        let j3 = format!("{}\n{}", jrow(s1, "true", "F"), jrow(s2, "false", "N"));
+        let report = tmr_intake_triage(&mut j, NodeId(0), [&j1, &j2, &j3], false).expect("入账");
+        assert_eq!(report.corroborated, 1, "s1 三源一致 true → 佐证成立");
+        assert_eq!(
+            report.suppressed_single, 1,
+            "s2 单源 true → 降级（投毒抑制面）"
+        );
+        assert_eq!(report.findings, 2);
+        let dag = j.dag().clone();
+        let suppressed = dag
+            .nodes()
+            .iter()
+            .find(|n| n.title.contains("injection") && n.verdict == Trit::Unknown)
+            .expect("被降级的发现存在");
+        assert!(
+            suppressed
+                .history
+                .last()
+                .expect("有事件")
+                .note
+                .contains("单源降权"),
+            "降级注记可见"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn tmr_bridge_counts_conflicted_and_skips_all_abstain() {
+        let (mut j, path) = temp_journal("tmr2");
+        let s1 = "cc03";
+        // 全源 unknown → 0 态发现；一个源 four=B → 矛盾告警计数
+        let jrow = |value: &str, four: &str| {
+            format!(
+                r#"{{"kind":"judgment","sha256":"{s1}","id":"packed","title":"判定","value":"{value}","four":"{four}","support":[],"refute":[],"unknown":[]}}"#
+            )
+        };
+        let j1 = jrow("unknown", "B");
+        let j2 = jrow("unknown", "N");
+        let j3 = jrow("false", "N");
+        let report = tmr_intake_triage(&mut j, NodeId(0), [&j1, &j2, &j3], false).expect("入账");
+        assert_eq!(report.conflicted, 1, "four=B 矛盾告警计数（想法一联动）");
+        assert_eq!(report.findings, 1, "unknown 落账为 0 态发现");
+        // 全源 false → 不入账（扫描器永不 +1）
+        let j4 = jrow("false", "F");
+        let j5 = jrow("false", "F");
+        let j6 = jrow("false", "F");
+        let report = tmr_intake_triage(&mut j, NodeId(0), [&j4, &j5, &j6], false).expect("入账");
+        assert_eq!(report.findings, 0, "全源弃权不入账");
         let _ = std::fs::remove_file(&path);
     }
 }

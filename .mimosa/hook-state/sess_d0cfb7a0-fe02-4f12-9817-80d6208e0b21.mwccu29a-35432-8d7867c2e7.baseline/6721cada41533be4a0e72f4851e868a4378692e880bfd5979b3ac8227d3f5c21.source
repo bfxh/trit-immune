@@ -69,6 +69,9 @@ pub struct TriageIntakeReport {
     pub quarantined: usize,
     /// 非法 JSONL 行数（如实计数不中断）。
     pub bad_lines: usize,
+    /// four=B（Belnap 矛盾）判定数——扫描器内部证据自洽性告警，
+    /// 模因矛盾的机器可检测信号（MEMETIC-RESISTANCE 想法一）。
+    pub conflicted: usize,
 }
 
 /// 把 trit-re 的 JSONL 台账吃进账本：`parent` 下立样本节点（`file` 行），
@@ -160,6 +163,12 @@ pub fn intake_triage(
                 *sample_of.get(&sha).expect("刚插入")
             }
         };
+        // four=B（Belnap 矛盾）= 扫描器内部证据自洽性告警——值映射照常
+        //（B 判定的 value 是 unknown/true 由 trit-re 定），但**单独计数**：
+        // 模因矛盾的机器可检测信号（MEMETIC-RESISTANCE 想法一）。
+        if row.four.eq_ignore_ascii_case("B") {
+            report.conflicted += 1;
+        }
         let verdict = match row.value.as_str() {
             "true" => {
                 report.vulnerable += 1;
@@ -418,6 +427,41 @@ mod tests {
             .filter(|n| n.title.contains("trit-re 样本 dead02"))
             .collect();
         assert_eq!(samples.len(), 1, "乱序不产生孤儿/重复样本节点");
+        drop(j.into_dag().expect("落盘"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn four_b_counts_as_memetic_alarm() {
+        // MEMETIC-RESISTANCE 想法一：four=B（Belnap 矛盾——扫描器内部证据
+        // 自洽性告警，如"签过名但结构像加壳"）单独计数——模因矛盾的机器
+        // 可检测信号；值映射照常（B 判定的 value 由 trit-re 定）。
+        let (mut j, path) = temp_journal("memetic");
+        let jsonl = concat!(
+            r#"{"kind":"judgment","sha256":"deadb","id":"packed","title":"签名但结构像加壳","value":"unknown","four":"B","support":["authenticode.present"],"refute":["packer.section_name"],"unknown":[]}"#,
+            "\n",
+            r#"{"kind":"file","schema":3,"sha256":"deadb","size":7}"#,
+            "\n",
+            r#"{"kind":"judgment","sha256":"deadb","id":"injection","title":"注入","value":"true","four":"F","support":[],"refute":[],"unknown":[]}"#,
+            "\n",
+        );
+        let report = intake_triage(&mut j, NodeId(0), jsonl, false).expect("入账");
+        assert_eq!(report.conflicted, 1, "只有 four=B 计入矛盾告警");
+        assert_eq!(report.vulnerable, 1, "F 判定照常 -1");
+        assert_eq!(report.unknown, 1, "B 判定值映射照常（unknown → 0）");
+        let dag = j.dag().clone();
+        let packed_node = dag
+            .nodes()
+            .iter()
+            .find(|n| n.title.contains("trit-re 判定: packed"))
+            .expect("B 判定节点存在");
+        assert!(
+            packed_node
+                .history
+                .iter()
+                .any(|e| e.note.contains("four=B") && e.note.contains("签名但结构像加壳")),
+            "B 判定的 history 事件带 four 标记与原始 title"
+        );
         drop(j.into_dag().expect("落盘"));
         let _ = std::fs::remove_file(&path);
     }

@@ -1,0 +1,251 @@
+{
+  "schema_version": "mimosa-task-review/v2",
+  "run_id": "20261111T164954719Z-25540-7096f8839ed7",
+  "run_status": "inconclusive",
+  "errors": [
+    {
+      "stage": "baseline-read",
+      "target": "src/tmr.rs",
+      "reason": "baseline_snapshot_unreadable: file is missing from task baseline"
+    },
+    {
+      "stage": "baseline-read",
+      "target": "scripts/tmr_vote.py",
+      "reason": "baseline_snapshot_unreadable: file is missing from task baseline"
+    }
+  ],
+  "coverage": {
+    "schema_version": "mimosa-hook-coverage/v1",
+    "status": "partial",
+    "scope": "hook_observed_diff",
+    "baseline": {
+      "complete": true,
+      "captured_files": 85,
+      "candidate_limit": 5000,
+      "truncated": false,
+      "enumeration_error_count": 0,
+      "snapshot_error_count": 0,
+      "compensated_target_count": 5
+    },
+    "change_tracking": {
+      "touched_observed": 4,
+      "touched_retained": 4,
+      "truncated": false,
+      "bash_mutation": true,
+      "bash_discovered": 7,
+      "bash_discovery_limit": 80,
+      "bash_discovery_truncated": false
+    },
+    "candidates": {
+      "eligible_files": 7,
+      "selected_files": 7,
+      "limit": 20,
+      "truncated": false
+    },
+    "scanning": {
+      "required_files": 6,
+      "scanned_files": 6,
+      "skipped_files": 0,
+      "failed_files": 0,
+      "project_checks_required": 0,
+      "project_checks_completed": 0
+    },
+    "notification": {
+      "eligible_findings": 0,
+      "detailed_findings": 0,
+      "detail_limit": 3,
+      "truncated": false
+    },
+    "reason_counts": {
+      "baseline_snapshot_unreadable": 2,
+      "project_check_failed": 2
+    },
+    "reasons": [
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": "src/tmr.rs",
+        "detail": "file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": "scripts/tmr_vote.py",
+        "detail": "file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": "src/tmr.rs",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": "scripts/tmr_vote.py",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affects_completion": true
+      }
+    ],
+    "reasons_truncated": false
+  },
+  "generated_at": "2026-11-11T16:49:54.719Z",
+  "session_id": "sess_d0cfb7a0-fe02-4f12-9817-80d6208e0b21",
+  "target": ".",
+  "revision": "937660abb0c9c4f09b3dabc5e7a5d6184d4ec5f8",
+  "rules_version": "unavailable",
+  "diff_hash": "9068b71dd5dedd9ea58c968bd708babea4c26defcfc862be4945ade21be87f49",
+  "diff": {
+    "algorithm": "sha256",
+    "changed_file_count": 6,
+    "changed_files": [
+      {
+        "file": "scripts/scrub_sim.py",
+        "ranges": [
+          {
+            "start": 68,
+            "end": 68
+          },
+          {
+            "start": 73,
+            "end": 73
+          },
+          {
+            "start": 75,
+            "end": 75
+          },
+          {
+            "start": 78,
+            "end": 83
+          },
+          {
+            "start": 85,
+            "end": 94
+          }
+        ],
+        "before_hash": "fd7356951fa8c851655a7abc9dbd9d0a62858b77eca4cfd881674506f425bcc2",
+        "after_hash": "3027f4a56ff2ee0eb13ddae5474083c02cbc363f82c15ef08863b1692f961e99"
+      },
+      {
+        "file": "scripts/tmr_vote.py",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 131
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "2d1cc7190e36cc633ce0636c5a4a8293f061c35bda905d41cf20e8ebf1e2964a"
+      },
+      {
+        "file": "src/bin/trit.rs",
+        "ranges": [
+          {
+            "start": 535,
+            "end": 535
+          },
+          {
+            "start": 543,
+            "end": 543
+          }
+        ],
+        "before_hash": "e7c0ef5781d293dd1263437cf2669fbd561098496ff3f734de2311371f338cca",
+        "after_hash": "1173482cec306534de4eccaaec6afd77cacaeb457ebfa7aedcdfb3406366ed84"
+      },
+      {
+        "file": "src/retbridge.rs",
+        "ranges": [
+          {
+            "start": 72,
+            "end": 74
+          },
+          {
+            "start": 166,
+            "end": 171
+          },
+          {
+            "start": 432,
+            "end": 466
+          }
+        ],
+        "before_hash": "5d0f675889ed394b4646e008963ef4534447721677a23e585693760867f56e7a",
+        "after_hash": "7e6de2f7ddaa27463434d4442be47c018bade81bfac6792ff60f12e8b8e174b2"
+      },
+      {
+        "file": "src/tmr.rs",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 150
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "4eeb377722dbab9f163798c68931e67b90a14869c6745f998c77b0b309695fbd"
+      },
+      {
+        "file": "tests/retbridge_fleet.rs",
+        "ranges": [
+          {
+            "start": 201,
+            "end": 272
+          }
+        ],
+        "before_hash": "edc5ddaf57cbc7ef46ed562c1f1ec72d7d743cb185466cd03ba4845aaeedd407",
+        "after_hash": "e63748ead11b844bef7f5c5915414a66c5ab931e1aa2a10b45368c4b6ebba0eb"
+      }
+    ]
+  },
+  "timing": {
+    "started_at": "2026-11-11T16:49:53.599Z",
+    "completed_at": "2026-11-11T16:49:54.719Z",
+    "duration_ms": 1120,
+    "measurement": "hook_wall_clock"
+  },
+  "tokens": {
+    "input": 0,
+    "output": 0,
+    "total": 0,
+    "model_calls": 0,
+    "measurement": "known-zero"
+  },
+  "telemetry": {
+    "schemaVersion": "mimosa-gate-telemetry/v1",
+    "profile": "gate",
+    "operation": "Stop",
+    "outcome": "partial/INCONCLUSIVE",
+    "latencyMs": 1120,
+    "peakMemoryBytes": 162684928,
+    "memoryMeasurement": "max-observed-process-rss",
+    "scannedFiles": 6,
+    "cache": {
+      "hits": 0,
+      "misses": 0,
+      "measurement": "not-applicable"
+    },
+    "denyCount": 0,
+    "tokens": {
+      "input": 0,
+      "output": 0,
+      "total": 0,
+      "modelCalls": 0,
+      "measurement": "known-zero"
+    }
+  },
+  "finding_count": 0,
+  "rewake_finding_count": 0,
+  "evidence_boundary": {
+    "scan": "candidate",
+    "static_fix_verification": "observed_static_only",
+    "runtime_verification": "not_performed"
+  },
+  "finding_events": [],
+  "findings": [],
+  "artifacts": {
+    "immutable_report": ".mimosa/reports/task-review-sess_d0cfb7a0-fe02-4f12-9817-80d6208e0b21-20261111T164954719Z-25540-7096f8839ed7.json",
+    "latest_report": ".mimosa/reports/task-review-sess_d0cfb7a0-fe02-4f12-9817-80d6208e0b21.json",
+    "history_summary": ".mimosa/history/run-20261111T164954719Z-25540-7096f8839ed7.json"
+  }
+}
