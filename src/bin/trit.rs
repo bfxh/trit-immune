@@ -751,10 +751,95 @@ fn help_text() -> String {
                             git 共存桥：提交历史吸收进账本（0 态+默认隔离）
   lock [-f file] [--build <feature,feature>]
                             依赖坐标入账（Cargo.lock 从 stdin 读，幂等）
+  tmr-bridge <j1> <j2> <j3> [-f file] [-n N] [--no-quarantine]
+                            三源 TMR 桥：三份独立 JSONL 按发现配对表决入账
+                            （≥2 源一致 true → -1；单源声称降级 0）
   help                      本帮助
 
 默认账本：当前目录 repo.tritj（-f 可指定）。"
         .to_string()
+}
+
+/// **trit tmr-bridge <j1> <j2> <j3> [-f file] [-n N] [--no-quarantine]**
+/// （ROADMAP #350 段；MEMETIC-RESISTANCE 想法三的管线形态）——三份独立
+/// trit-re JSONL（三个扫描器）按 `(sha256, 判定 id)` 配对 TMR 表决入账：
+/// ≥2 源一致 true → -1（佐证成立）；单源 true → 降级 0 + 注记
+/// （投毒抑制面：单引擎声称无法独立入账）。
+fn cmd_tmr_bridge(args: &[String]) -> Result<(), CliError> {
+    let mut ledger_path = PathBuf::from(DEFAULT_LEDGER);
+    let mut parent: u32 = 0;
+    let mut quarantine = true;
+    let mut sources: Vec<String> = Vec::new();
+    let mut i = 0usize;
+    while i < args.len() {
+        match args[i].as_str() {
+            "-f" => {
+                ledger_path = PathBuf::from(
+                    args.get(i + 1)
+                        .ok_or_else(|| CliError::Usage("-f 需要跟一个文件".into()))?,
+                );
+                i += 2;
+            }
+            "-n" => {
+                parent = args
+                    .get(i + 1)
+                    .and_then(|v| v.parse().ok())
+                    .ok_or_else(|| CliError::Usage("-n 需要节点号".into()))?;
+                i += 2;
+            }
+            "--no-quarantine" => {
+                quarantine = false;
+                i += 1;
+            }
+            other if other.starts_with('-') => {
+                return Err(CliError::Usage(format!("未知旗标 {other}")));
+            }
+            other => {
+                if sources.len() < 3 {
+                    sources.push(other.to_string());
+                }
+                i += 1;
+            }
+        }
+    }
+    if sources.len() != 3 {
+        return Err(CliError::Usage(format!(
+            "tmr-bridge 需要 3 份 JSONL（三扫描器），给了 {}",
+            sources.len()
+        )));
+    }
+    let mut texts: Vec<String> = Vec::with_capacity(3);
+    for src in &sources {
+        let file = fence_ledger_path(std::path::Path::new(src))?;
+        texts.push(
+            std::fs::read_to_string(&file)
+                .map_err(|e| CliError::Runtime(format!("读 {} 失败：{e}", file.display())))?,
+        );
+    }
+    // `-f` 本命令独立解析（与 triage-bridge 同坑：split_ledger 只认首位）
+    let ledger_path = fence_ledger_path(&ledger_path)?;
+    let mut j = Journal::open_as(&ledger_path, 0)
+        .map_err(|e| CliError::Runtime(format!("打开账本 {} 失败：{e}", ledger_path.display())))?;
+    let parent = NodeId(parent);
+    if parent.0 as usize >= j.dag().nodes().len() {
+        return Err(CliError::Runtime(format!("父节点 #{:02} 不存在", parent.0)));
+    }
+    let texts_ref: [&str; 3] = [&texts[0], &texts[1], &texts[2]];
+    let report = retbridge::tmr_intake_triage(&mut j, parent, texts_ref, quarantine)
+        .map_err(|e| CliError::Runtime(e.to_string()))?;
+    drop(j.into_dag().map_err(|e| CliError::Runtime(e.to_string()))?);
+    println!(
+        "TMR 桥：样本 {}，发现 {}（佐证 {} / 单源降权 {} / 0 态 {}），矛盾告警 {}，坏行 {} → {}",
+        report.samples,
+        report.findings,
+        report.corroborated,
+        report.suppressed_single,
+        report.unknown,
+        report.conflicted,
+        report.bad_lines,
+        ledger_path.display()
+    );
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1085,86 +1170,4 @@ mod tests {
     // feature 清单走 `--build <逗号分隔>` 内联（字符集闸不变，
     // 逗号/空白混合分隔的规范化行为由 lock_reads_cargo_lock_from_stdin 覆盖），
     // 外部文件路径参数不再存在——path-traversal 面从入口消失。
-}
-
-/// **trit tmr-bridge <j1> <j2> <j3> [-f file] [-n N] [--no-quarantine]**
-/// （ROADMAP #350 段；MEMETIC-RESISTANCE 想法三的管线形态）——三份独立
-/// trit-re JSONL（三个扫描器）按 `(sha256, 判定 id)` 配对 TMR 表决入账：
-/// ≥2 源一致 true → -1（佐证成立）；单源 true → 降级 0 + 注记
-/// （投毒抑制面：单引擎声称无法独立入账）。
-fn cmd_tmr_bridge(args: &[String]) -> Result<(), CliError> {
-    let mut ledger_path = PathBuf::from(DEFAULT_LEDGER);
-    let mut parent: u32 = 0;
-    let mut quarantine = true;
-    let mut sources: Vec<String> = Vec::new();
-    let mut i = 0usize;
-    while i < args.len() {
-        match args[i].as_str() {
-            "-f" => {
-                ledger_path = PathBuf::from(
-                    args.get(i + 1)
-                        .ok_or_else(|| CliError::Usage("-f 需要跟一个文件".into()))?,
-                );
-                i += 2;
-            }
-            "-n" => {
-                parent = args
-                    .get(i + 1)
-                    .and_then(|v| v.parse().ok())
-                    .ok_or_else(|| CliError::Usage("-n 需要节点号".into()))?;
-                i += 2;
-            }
-            "--no-quarantine" => {
-                quarantine = false;
-                i += 1;
-            }
-            other if other.starts_with('-') => {
-                return Err(CliError::Usage(format!("未知旗标 {other}")));
-            }
-            other => {
-                if sources.len() < 3 {
-                    sources.push(other.to_string());
-                }
-                i += 1;
-            }
-        }
-    }
-    if sources.len() != 3 {
-        return Err(CliError::Usage(format!(
-            "tmr-bridge 需要 3 份 JSONL（三扫描器），给了 {}",
-            sources.len()
-        )));
-    }
-    let mut texts: Vec<String> = Vec::with_capacity(3);
-    for src in &sources {
-        let file = fence_ledger_path(std::path::Path::new(src))?;
-        texts.push(
-            std::fs::read_to_string(&file)
-                .map_err(|e| CliError::Runtime(format!("读 {} 失败：{e}", file.display())))?,
-        );
-    }
-    // `-f` 本命令独立解析（与 triage-bridge 同坑：split_ledger 只认首位）
-    let ledger_path = fence_ledger_path(&ledger_path)?;
-    let mut j = Journal::open_as(&ledger_path, 0)
-        .map_err(|e| CliError::Runtime(format!("打开账本 {} 失败：{e}", ledger_path.display())))?;
-    let parent = NodeId(parent);
-    if parent.0 as usize >= j.dag().nodes().len() {
-        return Err(CliError::Runtime(format!("父节点 #{:02} 不存在", parent.0)));
-    }
-    let texts_ref: [&str; 3] = [&texts[0], &texts[1], &texts[2]];
-    let report = retbridge::tmr_intake_triage(&mut j, parent, texts_ref, quarantine)
-        .map_err(|e| CliError::Runtime(e.to_string()))?;
-    drop(j.into_dag().map_err(|e| CliError::Runtime(e.to_string()))?);
-    println!(
-        "TMR 桥：样本 {}，发现 {}（佐证 {} / 单源降权 {} / 0 态 {}），矛盾告警 {}，坏行 {} → {}",
-        report.samples,
-        report.findings,
-        report.corroborated,
-        report.suppressed_single,
-        report.unknown,
-        report.conflicted,
-        report.bad_lines,
-        ledger_path.display()
-    );
-    Ok(())
 }

@@ -8,3 +8,6 @@
 __pycache__/
 # pin 的备份目录（scripts/pin.py）
 .trit/
+
+# Mimosa hook 会话状态（本地工件，不进仓）
+.mimosa/

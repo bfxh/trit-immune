@@ -711,7 +711,7 @@ mod tests {
         }
         let _ = std::fs::remove_file(&path);
     }
-    #[test]
+
     #[test]
     fn tmr_bridge_corroborated_vs_suppressed() {
         // MEMETIC-RESISTANCE 想法三（管线形态）：三源 TMR 桥——
