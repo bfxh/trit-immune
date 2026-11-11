@@ -117,10 +117,10 @@ Unknown？** 每找到一个就是一个任务。
 
 | 方向 | 分诊 | 说明 |
 |---|---|---|
-| ARM64 N2 块遍历 | **+1** | ARM64 固定 4 字节指令宽，不需要 x86 那样的长度解码器——比 x86 侧容易一个量级 |
+| ARM64 N2 块遍历 | **已落地** | arm64walk.rs（定宽 4 字节步进 + 控制流分类器 B/BL/B.cond/CBZ/CBNZ/TBZ/TBNZ/RET/BR/BLR，与 x86 侧同型 WalkOutput）已接线 `Arch::Arm64` 分派；2026-11-07 ARM64-ELF 象限 12 真样本全链实战验证（CALIBRATION 读数行）——方向清账 |
 | 间接调用数据流（vtable/函数指针表） | **0** | 2026-11-07 负结果降级：实测 trit-re.exe 全部残余未归属点 = 间隙死跳板（E9→FF25 链，5/8 零引用），原假设"残余=漏检的数据流"被否定——跳板展开+指针表+块遍历已覆盖可归因面；解锁条件：真样本批次出现"疑边界漏检">0（thunk-gap 裁定已把残余如实单列） |
 | YARA 完整子集（正则/for/pe.* 模块） | **+1** | yaraparse 骨架已在，补齐后 N4 判据的"与官方一致"可全量对拍 |
-| N1 真实语料校准 | **0** | 解锁条件：真实样本批次到位（管线 `sample_batch` 两行命令就绪） |
+| N1 真实语料校准 | **0** | 2026-11-12 更新：三/四象限读数已落（x64 PE/PE32/ELF64/ARM64-ELF，2026-11-07 与 11-12 两轮读数行），规则集 v2 复扫 636 判定良性无新误报；**剩余 = 人工面复核**（benign elf64/arm64 的 loader+network 家族 6 行 + bash 工作表 2 行待 human_verdict）+ ARM64-PE 象限无样本源（如实缺口）；解锁条件改为：人工面复核完成 |
 | N4 规模化对拍 | **0** | 解锁条件：同上 + `gh auth`（harness `yara_diff.py` 就绪） |
 | PE32 共现 Unknown 收口 | **0** | 2026-11-07 解锁条件达成：联合测试落地（trit-re `tests/pe.rs::coff_and_cfg_jointly_attribute_pe32`——COFF 精确区间 + CFG 补隙 + 指针表种子三路同献、跨源归属、exact 保持、共现可判）；真实 mingw PE32 样本的 sha256 记录归 N1 批次 |
 | 二进制差异分析（BinDiff 式） | **0** | 解锁条件：N2 稳定后，函数签名匹配的最小子集 |
@@ -182,3 +182,14 @@ extract 线（trit-re 另一活跃方向）有自己的内部档位编号（"N4 
   上如实弃权 Unknown，这正是弃权语义的实证：系统库合法使用注入类导入，
   静态证据不足以判 -1，也不许谎报 1）。N1 校准级批次（带人工误报/漏报
   复核）仍待攻防样本。
+- 2026-11-12 **四层逃逸矩阵收官（读数落定）**：N1 批次 53 样本在规则集 v2
+  （#414 栈串+有序共现 / #416 ARM64 MOVZ/MOVK 解码）下全量复扫——
+  **636 判定：false 537 / unknown 84 / true 15**，良性 true 全为既有
+  loader+network 家族（elf64 2 + arm64 4），**无新误报**。三能力读数：
+  ①`fn.injection_ordered` 良性 47 条全 false/unknown（PE32 xref 不完整
+  如实 unknown）、sim_lvl4 正序变体 True——CFG 地址序判别面闭合；
+  ②ARM64 `stack_strings` 解码链良性 12 条全 false（FPR 0/12）——
+  ARM64 象限接进栈串证据源；③四象限词汇表统一（x64 PE / PE32 / ELF64 /
+  ARM64-ELF），L6 逃逸形态平台盲区清零。读数行入 trit-re
+  `docs/CALIBRATION.md`（#417）。余缺口：ARM64-PE 象限无样本源（如实）、
+  人工面 8 行待复核（loader+network 家族 6 + bash 工作表 2）。
