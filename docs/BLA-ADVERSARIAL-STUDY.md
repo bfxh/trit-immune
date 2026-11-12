@@ -168,7 +168,33 @@ min(分析成本, 枚举成本)。BLA 的放大率只作用于第一项——**�
   大、校验依赖不可枚举的密钥材料）必须真懂算法——那里 §二 的方法论
   与 §四 定理 1/2 成立。
 
-### 5.4 反哺三线（比它更能防 + 更能攻）
+### 5.5 CrackMe v6 复测（官方靶：成本集中点实测，部分突破）
+
+v6 = Node vault（164KB hardened JS）+ panel.html（128KB stage-B）+
+core.wasm（6.88MB，**252 个导出**）。方法 = §二 廉价路径：
+
+- **免费侦察**（一次性）：`WebAssembly.Module.exports` 一行名字过滤器把
+  252 导出分净——真身 `mix`/`seal`，250 个诱饵全是
+  `enclave_export_a53b_0_eeee…` 命名洪水（**毒饵免疫定理的 wasm 版
+  实证**：诱饵命名模式自暴）；vault 164KB/87 crypto 引用/vm 隔离 2 处/
+  enclave 桥侧车 1 个；SEAL.json 公开 keySha256/flagSha256 承诺。
+- **行为画像**：严格 16 字符（15/17 → usage），单路 `DENIED` 无理由
+  分类（无枚举面可挖）。
+- **四轮升级到边界**：①crypto 钩——零命中（DENIED 早于可见 crypto）；
+  ②WebAssembly.instantiate 钩——零命中；③require/fs 钩——bridge 从
+  未加载（诱饵侧车）、wasm 经 fs 读入 6.88MB；④**vm prelude 注入**
+  （runInContext 前置仪表，127KB 沙箱脚本）——零命中：**检查的引用在
+  vm realm 内快照化，外部仪表不可见**。
+- **读数**：v6 的成本集中点 = vm realm 隔离 + wasm mix/seal 语义恢复 +
+  无基线锚定——恰好是 §四 二分里的**硬防御层**（vm 隔离 = 真实复杂度、
+  纠缠 = 完整性）；老千层（导出洪水、假桥）在廉价侦察阶段即被看穿。
+  更深一档 = vm realm 内重建仪表（反编译 prelude 定位引用捕获）+ wasm
+  ABI 恢复——成本数量级高于自有靶（无 vm/纠缠 → oracle 直呼 ≈0）。
+- **曲线结论**：自有靶 oracle ≈0 vs 官方靶边界——**BLA 的硬防御层
+  （vm/纠缠/wasm 语义复杂度）扛住了廉价方法论，老千层全灭**。二分
+  得到实测曲线的第一个双点。
+
+### 5.6 反哺三线（比它更能防 + 更能攻）
 
 1. **trit-re：诱饵特征检测器（已落地 `src/decoy.rs`）**——BLA 形毒饵会
    **故意触发**我们的检测链（canary 假敏感 API 名 → 栈串/dynres/共现
