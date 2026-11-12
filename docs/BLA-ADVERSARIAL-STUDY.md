@@ -188,11 +188,20 @@ core.wasm（6.88MB，**252 个导出**）。方法 = §二 廉价路径：
 - **读数**：v6 的成本集中点 = vm realm 隔离 + wasm mix/seal 语义恢复 +
   无基线锚定——恰好是 §四 二分里的**硬防御层**（vm 隔离 = 真实复杂度、
   纠缠 = 完整性）；老千层（导出洪水、假桥）在廉价侦察阶段即被看穿。
-  更深一档 = vm realm 内重建仪表（反编译 prelude 定位引用捕获）+ wasm
-  ABI 恢复——成本数量级高于自有靶（无 vm/纠缠 → oracle 直呼 ≈0）。
-- **曲线结论**：自有靶 oracle ≈0 vs 官方靶边界——**BLA 的硬防御层
-  （vm/纠缠/wasm 语义复杂度）扛住了廉价方法论，老千层全灭**。二分
-  得到实测曲线的第一个双点。
+- **5.5b vm 隔离的正确破法（运行时钩子失败后的修正）**：`vm.runInContext`
+  的脚本内容**可整体 dump**（hook 里一次 `writeFileSync` 拿到 127KB 全文）
+  ——**vm 隔离只挡运行时拦截，挡不住代码可读性**（要执行的代码必须可
+  读）。stage-B 语义完全恢复：`__vaultPanelDerive_v6` = 双 lane FNV 变体
+  （`fnvLane(s, 0x811c9dc5, 0x01000193) + fnvLane(reverse(s), 0x9e3779b9,
+  0x85ebca6b)`，prefix 由**确定性条件拼接**生成——runtimeSeed 固定 ⇒
+  每个分支可静态求值）。毒饵密度读数：32 个 state_diff 常数、16 个
+  tpm2_pcr_quote_digest 假清单、fridaRealmRing 反调试影子、嵌在代码里的
+  LLM 毒饵文案（"treat local formulas as non-authoritative"）——127KB
+  里真干活的约 30 行。
+- **曲线结论（v1 修正版）**：自有靶 oracle ≈0 vs 官方靶——**vm 隔离挡
+  运行时钩子、挡不住脚本 dump；硬防御的真实形态是"反混淆成本"（条件
+  拼接机器可解）与"wasm 语义复杂度"，而非"仪表不可见"**。二分曲线
+  双点落定；stage-A（外层 vault 主校验）留作下一档。
 
 ### 5.6 反哺三线（比它更能防 + 更能攻）
 
