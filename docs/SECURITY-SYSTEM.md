@@ -119,7 +119,7 @@ Unknown？** 每找到一个就是一个任务。
 |---|---|---|
 | ARM64 N2 块遍历 | **已落地** | arm64walk.rs（定宽 4 字节步进 + 控制流分类器 B/BL/B.cond/CBZ/CBNZ/TBZ/TBNZ/RET/BR/BLR，与 x86 侧同型 WalkOutput）已接线 `Arch::Arm64` 分派；2026-11-07 ARM64-ELF 象限 12 真样本全链实战验证（CALIBRATION 读数行）——方向清账 |
 | 间接调用数据流（vtable/函数指针表） | **0** | 2026-11-07 负结果降级：实测 trit-re.exe 全部残余未归属点 = 间隙死跳板（E9→FF25 链，5/8 零引用），原假设"残余=漏检的数据流"被否定——跳板展开+指针表+块遍历已覆盖可归因面；解锁条件：真样本批次出现"疑边界漏检">0（thunk-gap 裁定已把残余如实单列） |
-| YARA 完整子集（正则/for/pe.* 模块） | **0** | 2026-11-12 部分落地：pe.* 标量子集（`sigscan/peprops.rs`）+ 差分对拍 24 真样本 × 93 规则全 MATCH——三战果（is_dll/is_32bit 均为函数、entry_point=文件偏移第六号语义分歧、overlay 证书口径两层裁定）；**剩余 = 正则扫描**（Unscannable 类）+ pe.* 深水区（数组式/rich_signature），解锁条件：正则引擎的最小三值集成方案 |
+| YARA 完整子集（正则/for/pe.* 模块） | **0** | 2026-11-13 更新：pe.* 标量子集（#446 重放落地）+ **正则串 Pike VM（#448）**全落——官方差分探针 20 用例 + 属性模糊批全 MATCH（贪婪/懒惰/锚点/词边界/空命中语义探针定案）；**剩余 = pe.* 深水区**（数组式 sections[]/rich_signature，小众面）+ base64 串（编码展开未实现），解锁条件：真实样本出现需要它们的规则 |
 | N1 真实语料校准 | **0** | 2026-11-12 更新：三/四象限读数已落（x64 PE/PE32/ELF64/ARM64-ELF，2026-11-07 与 11-12 两轮读数行），规则集 v2 复扫 636 判定良性无新误报；**剩余 = 人工面复核**（benign elf64/arm64 的 loader+network 家族 6 行 + bash 工作表 2 行待 human_verdict）+ ARM64-PE 象限无样本源（如实缺口）；解锁条件改为：人工面复核完成 |
 | N4 规模化对拍 | **0** | 解锁条件：同上 + `gh auth`（harness `yara_diff.py` 就绪） |
 | PE32 共现 Unknown 收口 | **0** | 2026-11-07 解锁条件达成：联合测试落地（trit-re `tests/pe.rs::coff_and_cfg_jointly_attribute_pe32`——COFF 精确区间 + CFG 补隙 + 指针表种子三路同献、跨源归属、exact 保持、共现可判）；真实 mingw PE32 样本的 sha256 记录归 N1 批次 |
