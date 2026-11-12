@@ -155,7 +155,7 @@ Unknown？** 每找到一个就是一个任务。
 | 方向 | 分诊 | 说明 |
 |---|---|---|
 | Abstention-aware 检测（弃权语义一等公民） | **+1** | 2026-11-07 论文骨架已立（`docs/PAPER-ABSTENTION.md`：论点/五贡献/证据映射表/E1-E3 已完成、E4 等 N1 批次）——每条主张带复算命令；唯一外部依赖 = 校准级误报/漏报率 |
-| 模因污染抗性（太空抗干扰迁移） | **+1** | 2026-11-08 研究已立（`docs/MEMETIC-RESISTANCE.md`：太空 TMR/scrubbing ↔ 账本抗污染同构表 + 三想法——**B4 = 模因矛盾检测器**、复核 = memory scrubbing、裁决 TMR 多扫描器表决算子）；可做实验三个全纯防御侧（B 检测/scrubbing 曲线/裁决 TMR）；合谋防御不归表决层（红线如实） |
+| 模因污染抗性（太空抗干扰迁移） | **已落地** | 三实验全部代码化（ROADMAP #53）：①B4 模因矛盾检测器 = `four=B` 告警计数（retbridge）；②复核 = memory scrubbing 定量律仿真（`scripts/scrub_sim.py`：平台 = min(1,C/P)，P 可反解）；③裁决 TMR = `src/tmr.rs`（plurality ≥2、三票溯源）+ 舰队级 `tmr_sync_cross_repo`（多源先收集后表决、人工 Hardened 受保护——fleet_tmr.rs 三场景钉死）；合谋防御不归表决层（红线如实）——方向清账 |
 | 三值 CRDT 安全裁决账本 | **0** | δ-CRDT 已对标（Almeida et al.）；补安全域的实证章节 |
 | 负结果入册的文化与机制 | **0** | workshop 论文：机制已落地（诚实边界、负结果入册），差真实失败的案例集 |
 
