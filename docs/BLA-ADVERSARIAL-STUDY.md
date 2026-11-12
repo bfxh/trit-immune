@@ -226,6 +226,28 @@ sha256 单向 + 16 字符大空间（SEAL.json 公开 keySha256/flagSha256 承�
 （毒饵/耗尽/vm 隔离）都是可定价的成本项**。方法论曲线三点：自有靶
 ≈0 → 官方靶算法恢复 ≈0 → 官方靶原像不可行。
 
+### 5.5d 家族曲线（v7–v9）：BLA 自己的红蓝史佐证定理
+
+- **v7 Meridian**：`calc` 未授权**照常工作**（探针实测
+  `sqrt(2)` → 1.41421356237——license 只门 activate/pro）；**已被社区
+  攻破**——v8 DESIGN.md 的 R2–R4 记录：panel oracle、JS AES unwrap、
+  可逆 seal 全是 v7 的失守项。
+- **v8 Aegis**：DESIGN.md = 自文档化红蓝史（R1–R12）。关键互证——
+  **R-v8 red：'Public SEAL `seed` → schedule KP; public `keySha256` →
+  offline key oracle'**——v6 的公开承诺被设计者自己确认为 oracle 弱点
+  （= 本文定理 3），v8 的修复：seed 私有、SEAL v2 只发 `label` +
+  `flagSha256`；R1–R9 逐条修掉 panel oracle / 可逆 seal / XOR 掩码
+  侧车；**P2 诚实自报 residual：Full WASM RE + SMT**（= 定理 2 的
+  "代价外生防御"，如实未解）。
+- **v9 Sovereign**：+ `policy.py`（Python 盾）+ 4 阶段 agent 驱动
+  weaving（weaveScore 100）；行为探针同 v8 家族（uniform DENIED）。
+- **家族曲线五点**：自有靶 oracle≈0 → v7（老千层被社区全灭、算术
+  oracle 无关 license）→ v6（算法恢复≈0/原像不可行）→ v8（R1–R12
+  修复 + 诚实 residual）→ v9（+Python 盾，同家族）。**BLA 自己用
+  四版演进收敛到与定理 1–3 相同的结论**——公开承诺即 oracle、毒饵
+  可定价、硬防御 = 原像 + 私有材料 + 代价外生复杂度 + 诚实 residual。
+  攻防双方独立得出同一边界 = 边界是真的。
+
 ### 5.6 反哺三线（比它更能防 + 更能攻）
 
 1. **trit-re：诱饵特征检测器（已落地 `src/decoy.rs`）**——BLA 形毒饵会
